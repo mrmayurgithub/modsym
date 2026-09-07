@@ -1,6 +1,6 @@
 {
   "name": "modsym",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Find the TypeScript declaration (.d.ts) for an exported symbol in an npm package — or truthfully abstain. Small CLI for coding agents.",
   "type": "module",
   "bin": {
