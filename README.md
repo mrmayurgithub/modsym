@@ -1,6 +1,6 @@
 # modsym
 
-A small deterministic shortcut for resolving an npm package symbol to its published TypeScript declaration, without manually chasing exports and `.d.ts` files.
+A small CLI that resolves an exported symbol from an npm package to its published TypeScript declaration, without manually chasing package re-exports, barrels, aliases, and `.d.ts` files.
 
 ```bash
 modsym zod@4.5.4 string
@@ -30,9 +30,9 @@ modsym @ai-sdk/openai@4.0.60 createOpenAI
 
 `modsym` is primarily a small primitive for coding agents and agentic developer tooling that need to inspect an unfamiliar npm API. It is also usable directly from a terminal, but it is not a general npm inspection tool.
 
-## The problem
+## Find which `.d.ts` file defines an exported npm package symbol
 
-When an agent needs the exact declaration of an unfamiliar export, the manual path is sometimes:
+When an agent needs the exact declaration behind an unfamiliar export — the file and line an IDE's 'go to definition' would land on — the manual path is sometimes:
 
 ```text
 package.json
@@ -44,16 +44,16 @@ package.json
 → actual .d.ts declaration
 ```
 
-That can take several `rg`, `find`, `npm`, and file-reading calls — not on every task, but often enough on export-heavy packages to matter. `modsym` provides one bounded primitive for that specific operation.
+That can take several `rg`, `find`, `npm`, and file-reading calls — not on every task, but often enough on export-heavy packages to matter. `modsym` provides one bounded primitive for that specific lookup.
 
 ## How it works
 
 1. Resolves the requested package/version with npm-compatible tooling (`pacote`; accepts bare names, `name@version`, ranges, dist-tags, local `file:` paths).
 2. Discovers the package's published declaration entry points from `package.json` (`exports.types`, `types`/`typings`, related conditions).
-3. Follows the package's TypeScript export/re-export graph (barrels, `export *`, named re-exports, same-file aliases).
-4. Uses the TypeScript compiler as a syntax parser (per-file AST; no `Program`, no type checker, no language server) to identify the exported declaration.
-5. Returns bounded deterministic JSON (text and chains are length-capped).
-6. Abstains instead of guessing when resolution is unsupported or ambiguous.
+3. Follows the package's TypeScript export/re-export graph, including relative and self-package re-exports (barrels, `export *`, named re-exports, same-file aliases).
+4. Parses candidate files with the TypeScript compiler as a syntax parser (per-file AST via `createSourceFile`; no `Program`, no type checker, no language server) to identify the exported declaration.
+5. Resolves the bare symbol to its unique declaration and returns bounded deterministic JSON (text and chains are length-capped).
+6. Abstains with a machine-readable reason instead of guessing when the symbol is unsupported or ambiguous.
 
 This makes it more than a grep wrapper — it understands export structure — without running type checking or a server.
 

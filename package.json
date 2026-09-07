@@ -1,7 +1,7 @@
 {
   "name": "modsym",
   "version": "0.1.0",
-  "description": "Resolve an npm package's public symbol to its published TypeScript declaration. One deterministic JSON answer for coding agents.",
+  "description": "Find the TypeScript declaration (.d.ts) for an exported symbol in an npm package — or truthfully abstain. Small CLI for coding agents.",
   "type": "module",
   "bin": {
     "modsym": "bin/modsym.js"
@@ -22,10 +22,14 @@
     "url": "https://github.com/mrmayurgithub/modsym/issues"
   },
   "keywords": [
-    "npm",
     "typescript",
+    "npm",
+    "cli",
+    "symbols",
     "declarations",
-    "cli"
+    "dts",
+    "developer-tools",
+    "coding-agents"
   ],
   "files": [
     "bin/",
