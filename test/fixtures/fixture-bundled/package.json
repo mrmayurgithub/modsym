@@ -1,0 +1,5 @@
+{
+  "name": "fixture-bundled",
+  "version": "1.0.0",
+  "types": "./dist/index.d.ts"
+}

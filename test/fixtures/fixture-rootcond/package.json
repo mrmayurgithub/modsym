@@ -1,0 +1,9 @@
+{
+  "name": "fixture-rootcond",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "types": "./dist/source/index.d.ts",
+    "default": "./dist/source/index.js"
+  }
+}

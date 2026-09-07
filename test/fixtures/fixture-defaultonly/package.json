@@ -1,0 +1,14 @@
+{
+  "name": "fixture-defaultonly",
+  "version": "1.0.0",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./thing": {
+      "types": "./thing.d.ts",
+      "default": "./thing.js"
+    }
+  }
+}

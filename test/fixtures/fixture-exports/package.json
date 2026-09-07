@@ -1,0 +1,42 @@
+{
+  "name": "fixture-exports",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./index.d.ts",
+        "default": "./index.js"
+      },
+      "require": {
+        "types": "./index.d.cts",
+        "default": "./index.cjs"
+      }
+    },
+    "./alpha": {
+      "import": {
+        "types": "./alpha.d.ts",
+        "default": "./alpha.js"
+      }
+    },
+    "./beta": {
+      "import": {
+        "types": "./beta.d.ts",
+        "default": "./beta.js"
+      }
+    },
+    "./gamma": {
+      "import": {
+        "types": "./gamma.d.ts",
+        "default": "./gamma.js"
+      }
+    },
+    "./delta": {
+      "import": {
+        "types": "./delta.d.ts",
+        "default": "./delta.js"
+      }
+    }
+  }
+}

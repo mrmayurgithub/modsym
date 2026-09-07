@@ -1,0 +1,22 @@
+{
+  "name": "fixture-ambiguous",
+  "version": "1.0.0",
+  "exports": {
+    ".": {
+      "types": "./dist/root.d.ts",
+      "default": "./dist/root.js"
+    },
+    "./alpha": {
+      "types": "./dist/alpha.d.ts",
+      "default": "./dist/alpha.js"
+    },
+    "./beta": {
+      "types": "./dist/beta.d.ts",
+      "default": "./dist/beta.js"
+    },
+    "./only": {
+      "types": "./dist/only.d.ts",
+      "default": "./dist/only.js"
+    }
+  }
+}

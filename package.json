@@ -1,0 +1,54 @@
+{
+  "name": "modsym",
+  "version": "0.1.0",
+  "description": "Resolve an npm package's public symbol to its published TypeScript declaration. One deterministic JSON answer for coding agents.",
+  "type": "module",
+  "bin": {
+    "modsym": "bin/modsym.js"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrmayurgithub/modsym.git"
+  },
+  "homepage": "https://github.com/mrmayurgithub/modsym#readme",
+  "bugs": {
+    "url": "https://github.com/mrmayurgithub/modsym/issues"
+  },
+  "keywords": [
+    "npm",
+    "typescript",
+    "declarations",
+    "cli"
+  ],
+  "files": [
+    "bin/",
+    "src/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "npm-package-arg": "^13.0.0",
+    "pacote": "^21.0.0",
+    "typescript": "^5.8.0"
+  },
+  "scripts": {
+    "test": "node --test test/resolve.test.js test/entry.test.js test/graph.test.js test/contract.test.js",
+    "test:corpora": "node scripts/test-corpora.mjs",
+    "gen:fixtures": "node scripts/gen-fixtures.mjs"
+  },
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "devDependencies": {},
+  "author": ""
+}

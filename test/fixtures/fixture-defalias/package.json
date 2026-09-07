@@ -1,0 +1,5 @@
+{
+  "name": "fixture-defalias",
+  "version": "1.0.0",
+  "types": "./built/index.d.ts"
+}
