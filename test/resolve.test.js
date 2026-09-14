@@ -111,6 +111,37 @@ function cleanSubpathWithBrokenSiblingFixture() {
   return dir;
 }
 
+function cleanSubpathWithMissingSiblingFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-missing-subpath-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture-resolve-missing-subpath',
+    version: '1.0.0',
+    exports: {
+      '.': { types: './index.d.ts' },
+      './clean': { types: './clean.d.ts' },
+      './broken': { types: './missing.d.ts' },
+    },
+  }));
+  fs.writeFileSync(path.join(dir, 'index.d.ts'), 'export {};\n');
+  fs.writeFileSync(path.join(dir, 'clean.d.ts'), 'export declare function onlyClean(): void;\n');
+  return dir;
+}
+
+function defaultAliasWithStarSiblingFixture(sibling, local = 'declare const Foo: string;') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-default-alias-star-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture-resolve-default-alias-star',
+    version: '1.0.0',
+    types: './index.d.ts',
+  }));
+  fs.writeFileSync(
+    path.join(dir, 'index.d.ts'),
+    `${local}\nexport default Foo;\nexport * from "./other.js";\n`,
+  );
+  fs.writeFileSync(path.join(dir, 'other.d.ts'), sibling);
+  return dir;
+}
+
 // [fixture, symbol, expectedStatus, expectedFile, expectedLine, expectedKind, expectedReason]
 const cases = [
   // Zod-style multi-hop barrel with a rename in the middle.
@@ -327,6 +358,26 @@ describe('resolveIn: direct hits with unresolved named re-export siblings', () =
     assert.equal(result.filesVisited, 1);
   });
 
+  it('does not choose a direct hit over a conflicting named re-export sibling', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-named-conflict-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-named-conflict',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    fs.writeFileSync(path.join(dir, 'index.d.ts'), 'export declare function Foo(): void;\nexport { Foo } from "./other.js";\n');
+    fs.writeFileSync(path.join(dir, 'other.d.ts'), 'export declare const Foo: number;\n');
+
+    const result = resolveIn(dir, 'Foo');
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.reason, 'ambiguous');
+    assert.deepEqual(result.candidates.map(candidate => candidate.text).sort(), [
+      'export declare const Foo: number;',
+      'export declare function Foo(): void;',
+    ]);
+  });
+
   it('resolves when a same-file named re-export sibling resolves and agrees', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-named-agreement-'));
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
@@ -471,9 +522,42 @@ describe('resolveIn: namespace hits with star siblings', () => {
   });
 });
 
+describe('resolveIn: default-alias hits with star siblings', () => {
+  it('does not choose a default-alias hit over a conflicting star sibling', () => {
+    const result = resolveIn(defaultAliasWithStarSiblingFixture('export declare const Foo: number;\n'), 'Foo');
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.reason, 'ambiguous');
+  });
+
+  it('resolves a default-alias hit when a star sibling agrees', () => {
+    const result = resolveIn(defaultAliasWithStarSiblingFixture('export declare const Foo: string;\n'), 'Foo');
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.decl.via, 'export default');
+  });
+
+  it('does not equate callable declarations with different declaration kinds', () => {
+    const result = resolveIn(defaultAliasWithStarSiblingFixture(
+      'export declare const Foo: () => void;\n',
+      'declare function Foo(): void;',
+    ), 'Foo');
+
+    assert.equal(result.status, 'ambiguous');
+    assert.deepEqual(result.candidates.map(candidate => candidate.kind).sort(), ['const', 'function']);
+  });
+});
+
 describe('resolveIn: subpath completeness', () => {
   it('conservatively abstains when an unrelated sibling subpath is incomplete', () => {
     const result = resolveIn(cleanSubpathWithBrokenSiblingFixture(), 'onlyClean');
+
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('conservatively abstains when an advertised sibling declaration is missing', () => {
+    const result = resolveIn(cleanSubpathWithMissingSiblingFixture(), 'onlyClean');
 
     assert.equal(result.status, 'not-resolved');
     assert.equal(result.reason, 'resolution_incomplete');

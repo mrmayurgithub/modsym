@@ -67,12 +67,12 @@ export function resolveIn(root, symbol) {
     const hit = processOne(ctx, item);
     if (hit) {
       if (hit.fromStar) {
-        collectStarHit(starHits, hit);
+        collectCandidateHit(starHits, hit);
       } else if (hit.method !== 'ts-ast-namespace-alias' || hit.deferForSiblingChecks) {
         // Root entries and named re-export branches can be queued alongside
         // this concrete hit. Defer until all of them have had a chance to
         // produce the same bare symbol; queue order must not choose a winner.
-        collectStarHit(deferredConcreteHits, hit);
+        collectCandidateHit(deferredConcreteHits, hit);
       } else {
         return traversal.complete ? hit : resolutionIncomplete(ctx);
       }
@@ -214,7 +214,7 @@ function processOne(ctx, item) {
           const target = resolveDep(ctx, file, localImport.src);
           if (target) {
             const hit = namespaceHit(ctx, target, seek, chain, cond, localImport.src, `${localImport.src} (import * as ${localName})`, fromStar, entryId, fromExplicitNamed);
-            probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, fromExplicitNamed);
+            probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, fromStar, entryId, fromExplicitNamed);
             hit.deferForSiblingChecks = true;
             return hit;
           }
@@ -235,7 +235,7 @@ function processOne(ctx, item) {
   }
   if (directHit) {
     collectSignals(ctx, signals, file, parsed, seek);
-    probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, fromExplicitNamed);
+    probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, fromStar, entryId, fromExplicitNamed);
     return directHit;
   }
 
@@ -248,7 +248,7 @@ function processOne(ctx, item) {
         const target = resolveDep(ctx, file, imp.src);
         if (target) {
           const hit = namespaceHit(ctx, target, seek, chain, cond, imp.src, `${imp.src} (import * as ${seek})`, fromStar, entryId, fromExplicitNamed);
-          probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, fromExplicitNamed);
+          probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, fromStar, entryId, fromExplicitNamed);
           hit.deferForSiblingChecks = true;
           return hit;
         }
@@ -271,7 +271,9 @@ function processOne(ctx, item) {
     parsed.exportEq === seek ? 'export =' : parsed.exportDefault === seek ? 'export default' : null;
   if (defaultVia && (parsed.pendingLocal.has(seek) || parsed.local.has(seek))) {
     const decls = parsed.pendingLocal.get(seek) || parsed.local.get(seek);
-    return resolved(decls, defaultVia, 'ts-ast-export-eq');
+    const hit = resolved(decls, defaultVia, 'ts-ast-export-eq');
+    probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, fromStar, entryId, fromExplicitNamed);
+    return hit;
   }
 
   collectSignals(ctx, signals, file, parsed, seek);
@@ -307,10 +309,17 @@ function processOne(ctx, item) {
   return null;
 }
 
-function probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, fromExplicitNamed) {
+function probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, fromStar, entryId, fromExplicitNamed) {
   const { traversal } = ctx;
   for (const edge of parsed.named.filter(n => n.exported === seek && n.src)) {
-    resolveNamedReexport(ctx, file, edge, seek);
+    const target = resolveNamedReexport(ctx, file, edge, seek);
+    if (target) traversal.enqueue(
+      target,
+      [...chain, `${edge.src} (${edge.local} as ${edge.exported})`],
+      edge.local,
+      cond,
+      { fromStar, entryId, fromExplicitNamed: !fromStar },
+    );
   }
   let enqueuedStarSibling = false;
   for (const src of parsed.stars) {
@@ -328,7 +337,7 @@ function probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, from
   return enqueuedStarSibling;
 }
 
-function collectStarHit(hits, hit) {
+function collectCandidateHit(hits, hit) {
   const key = `${hit.decl.file}:${hit.decl.line}:${hit.decl.kind}:${hit.decl.text}`;
   if (!hits.some(existing => `${existing.decl.file}:${existing.decl.line}:${existing.decl.kind}:${existing.decl.text}` === key)) {
     hits.push(hit);
@@ -345,7 +354,11 @@ function stripInternalHit(hit) {
 }
 
 function signatureKey(hit) {
-  return `${hit.decl.kind}:${hit.decl.overloads}:${hit.decl.text}`;
+  return `${hit.decl.kind}:${hit.decl.overloads}:${signatureText(hit.decl.text)}`;
+}
+
+function signatureText(text) {
+  return String(text || '').replace(/^\s*export\s+/, '');
 }
 
 function hitToCandidate(hit) {
@@ -482,7 +495,9 @@ function searchSubpaths(ctx) {
 
 function resolveFileSafe(ctx, rel) {
   try {
-    return resolveFile(path.join(ctx.root, 'package.json'), rel);
+    const file = resolveFile(path.join(ctx.root, 'package.json'), rel);
+    if (!file) ctx.traversal.markIncomplete();
+    return file;
   } catch {
     ctx.traversal.markIncomplete();
     return null;
