@@ -2,6 +2,8 @@ const MAX_CHAIN_ITEMS = 20;
 const MAX_TEXT_CHARS = 600;
 const MAX_CANDIDATES = 10;
 const MAX_CANDIDATE_TEXT = 200;
+export const DEFAULT_LIST_LIMIT = 100;
+export const MAX_LIST_LIMIT = 500;
 
 /**
  * Map the internal resolution result to the stable public JSON contract.
@@ -51,6 +53,39 @@ export function serialize(internal, identity) {
   return out;
 }
 
+export function serializeList(internal, identity, opts = {}) {
+  const { name, version } = identity;
+  const match = opts.match ?? null;
+  const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
+  if (internal.status !== 'listed') {
+    const out = {
+      status: 'not_resolved',
+      package: name,
+      version,
+      scope: 'root',
+      reason: internal.reason || 'not_found',
+    };
+    if (internal.note) out.note = internal.note;
+    if (internal.filesVisited !== undefined) out.filesVisited = internal.filesVisited;
+    return out;
+  }
+
+  const filtered = filterExports(internal.exports || [], match);
+  const shown = filtered.slice(0, limit).map(boundListedExport);
+  return {
+    status: 'listed',
+    package: name,
+    version,
+    scope: 'root',
+    match,
+    exports: shown,
+    total: filtered.length,
+    shown: shown.length,
+    truncated: filtered.length > shown.length,
+    filesVisited: internal.filesVisited ?? 0,
+  };
+}
+
 function boundDeclaration(decl) {
   return {
     file: decl.file,
@@ -73,6 +108,20 @@ function boundCandidate(candidate) {
     condition: candidate.condition ?? null,
     flavor: candidate.flavor ?? null,
   };
+}
+
+function boundListedExport(item) {
+  const out = { name: String(item.name) };
+  if (item.kind !== undefined) out.kind = String(item.kind);
+  if (item.file !== undefined) out.file = String(item.file);
+  if (Number.isInteger(item.line) && item.line > 0) out.line = item.line;
+  return out;
+}
+
+function filterExports(exports, match) {
+  if (match === null || match === undefined || match === '') return exports;
+  const needle = String(match).toLowerCase();
+  return exports.filter(item => String(item.name).toLowerCase().includes(needle));
 }
 
 function boundChain(chain) {

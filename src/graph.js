@@ -22,6 +22,43 @@ export function isBareSpecifier(spec) {
 }
 
 /**
+ * Resolve a declaration dependency found in `file`.
+ *
+ * Relative specifiers resolve to sibling declaration files. Self-package
+ * specifiers resolve through the package's own exports map. Other bare
+ * specifiers and package `#imports` are intentionally not traversed and
+ * return null. Callers that must prove traversal completeness can observe
+ * those unexamined edges through `onUnresolved`.
+ */
+export function resolveDependency(root, pkgJson, file, spec, hooks = {}) {
+  if (!spec) return null;
+  if (spec.startsWith('#')) {
+    if (hooks.onUnresolved) hooks.onUnresolved(spec);
+    return null;
+  }
+  if (isRelativeSpecifier(spec)) {
+    const resolved = resolveFile(file, spec);
+    if (!resolved && hooks.onUnresolved) hooks.onUnresolved(spec);
+    return resolved;
+  }
+  const pkgName = pkgJson?.name;
+  if (pkgName && (spec === pkgName || spec.startsWith(`${pkgName}/`))) {
+    const subpath = spec === pkgName ? '.' : `./${spec.slice(pkgName.length + 1)}`;
+    const rel = selfSubpathRel(pkgJson, subpath);
+    if (rel) {
+      const abs = resolveFile(path.join(root, 'package.json'), rel);
+      if (abs) return abs;
+    }
+    if (hooks.onSelf) hooks.onSelf(spec);
+    if (hooks.onUnresolved) hooks.onUnresolved(spec);
+    return null;
+  }
+  if (hooks.onExternal) hooks.onExternal(spec);
+  if (hooks.onUnresolved) hooks.onUnresolved(spec);
+  return null;
+}
+
+/**
  * Resolve a module specifier found in `baseFile` to an absolute
  * **declaration** file path, or null.
  *
@@ -101,20 +138,31 @@ export function createTraversal() {
   const visited = new Set();
   const seenContent = new Set();
   const queue = [];
+  let complete = true;
   return {
     queue,
     get visitedCount() {
       return visited.size;
     },
-    enqueue(file, chain, seek, cond = null) {
-      if (!file || !DECL_RE.test(file) || visited.has(file) || visited.size >= MAX_VISITED) {
+    get complete() {
+      return complete;
+    },
+    markIncomplete() {
+      complete = false;
+    },
+    enqueue(file, chain, seek, cond = null, extra = {}) {
+      if (!file || !DECL_RE.test(file) || visited.has(file)) {
+        return false;
+      }
+      if (visited.size >= MAX_VISITED) {
+        complete = false;
         return false;
       }
       const key = contentKey(file);
       if (key && seenContent.has(key)) return false;
       if (key) seenContent.add(key);
       visited.add(file);
-      queue.push({ file, chain, seek, cond });
+      queue.push({ file, chain, seek, cond, ...extra });
       return true;
     },
   };

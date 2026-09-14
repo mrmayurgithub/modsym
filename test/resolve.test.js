@@ -1,11 +1,33 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveIn } from '../src/resolve.js';
 
 const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const root = name => path.join(fixtures, name);
+
+function unexaminedStarResolveFixture(specifier) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-unexamined-star-'));
+  const packageJson = {
+    name: 'fixture-resolve-unexamined-star',
+    version: '1.0.0',
+    types: './index.d.ts',
+  };
+  if (specifier.startsWith('#')) packageJson.imports = { [specifier]: './hidden.d.ts' };
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(packageJson));
+  fs.writeFileSync(
+    path.join(dir, 'index.d.ts'),
+    `export * from "./present.js";\nexport * from "${specifier}";\n`,
+  );
+  fs.writeFileSync(path.join(dir, 'present.d.ts'), 'export declare const target: true;\n');
+  if (specifier.startsWith('#')) {
+    fs.writeFileSync(path.join(dir, 'hidden.d.ts'), 'export declare const target: false;\n');
+  }
+  return dir;
+}
 
 // [fixture, symbol, expectedStatus, expectedFile, expectedLine, expectedKind, expectedReason]
 const cases = [
@@ -108,5 +130,138 @@ describe('resolveIn: truthful abstention', () => {
     assert.equal(result.candidates.length, 2);
     const files = result.candidates.map(c => c.file).sort();
     assert.deepEqual(files, ['dist/alpha.d.ts', 'dist/beta.d.ts']);
+  });
+});
+
+describe('resolveIn: star export ambiguity', () => {
+  function starCollisionFixture(explicit = false) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-star-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-star',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'index.d.ts'),
+      [
+        'export * from "./a.js";',
+        'export * from "./b.js";',
+        explicit ? 'export { shared } from "./a.js";' : '',
+      ].filter(Boolean).join('\n'),
+    );
+    fs.writeFileSync(path.join(dir, 'a.d.ts'), 'export declare const shared: string;\n');
+    fs.writeFileSync(path.join(dir, 'b.d.ts'), 'export declare const shared: number;\n');
+    return dir;
+  }
+
+  it('does not confidently resolve duplicate star-export names', () => {
+    const result = resolveIn(starCollisionFixture(), 'shared');
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.candidates.length, 2);
+    assert.deepEqual(result.candidates.map(c => c.file).sort(), ['a.d.ts', 'b.d.ts']);
+  });
+
+  it('allows explicit re-exports to resolve a star-export collision', () => {
+    const result = resolveIn(starCollisionFixture(true), 'shared');
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.decl.file, 'a.d.ts');
+  });
+
+  it('abstains when a capped traversal cannot rule out a star-export conflict', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-incomplete-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-incomplete',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    const stars = [];
+    for (let i = 0; i < 801; i += 1) {
+      stars.push(`export * from "./branch-${i}.js";`);
+      const declaration = i === 0
+        ? 'export declare const shared: "first";\n'
+        : i === 800
+          ? 'export declare const shared: "conflict-beyond-cap";\n'
+          : `export declare const visible${i}: true;\n`;
+      fs.writeFileSync(path.join(dir, `branch-${i}.d.ts`), declaration);
+    }
+    fs.writeFileSync(path.join(dir, 'index.d.ts'), `${stars.join('\n')}\n`);
+
+    const result = resolveIn(dir, 'shared');
+
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+    assert.equal(result.filesVisited, 800);
+  });
+
+  it('abstains when a relative star-export target cannot be resolved', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-missing-relative-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-missing-relative',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'index.d.ts'),
+      'export * from "./present.js";\nexport * from "./missing.js";\n',
+    );
+    fs.writeFileSync(path.join(dir, 'present.d.ts'), 'export declare const target: true;\n');
+
+    const result = resolveIn(dir, 'target');
+
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+    assert.equal(result.filesVisited, 2);
+  });
+
+  it('abstains when a self-package star-export target cannot be resolved', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-missing-self-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-missing-self',
+      version: '1.0.0',
+      types: './index.d.ts',
+      exports: {
+        '.': { types: './index.d.ts' },
+        './present': { types: './present.d.ts' },
+      },
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'index.d.ts'),
+      'export * from "fixture-resolve-missing-self/present";\nexport * from "fixture-resolve-missing-self/missing";\n',
+    );
+    fs.writeFileSync(path.join(dir, 'present.d.ts'), 'export declare const target: true;\n');
+
+    const result = resolveIn(dir, 'target');
+
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+    assert.equal(result.filesVisited, 2);
+  });
+
+  it('abstains when an external-package star sibling prevents proving uniqueness', () => {
+    const result = resolveIn(unexaminedStarResolveFixture('external-package'), 'target');
+
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+    assert.equal(result.filesVisited, 2);
+  });
+
+  it('abstains when a package-import star sibling prevents proving uniqueness', () => {
+    const result = resolveIn(unexaminedStarResolveFixture('#some-import'), 'target');
+
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+    assert.equal(result.filesVisited, 2);
+  });
+
+  it('distinguishes an exact external re-export from an unexamined external star sibling', () => {
+    const external = resolveIn(root('fixture-external'), 'thing');
+    const incomplete = resolveIn(unexaminedStarResolveFixture('external-package'), 'target');
+
+    assert.equal(external.status, 'not-resolved');
+    assert.equal(external.reason, 'external_reexport');
+    assert.deepEqual(external.external, { name: 'thing', src: 'some-external-pkg' });
+    assert.equal(incomplete.status, 'not-resolved');
+    assert.equal(incomplete.reason, 'resolution_incomplete');
+    assert.equal(incomplete.external, undefined);
   });
 });

@@ -44,7 +44,7 @@
     "typescript": "^5.8.0"
   },
   "scripts": {
-    "test": "node --test test/resolve.test.js test/entry.test.js test/graph.test.js test/contract.test.js",
+    "test": "node --test test/resolve.test.js test/entry.test.js test/graph.test.js test/contract.test.js test/list.test.js",
     "test:corpora": "node scripts/test-corpora.mjs",
     "gen:fixtures": "node scripts/gen-fixtures.mjs"
   },

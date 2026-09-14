@@ -14,6 +14,7 @@ const ts = require('typescript');
  * - `defaults`: inline `export default class/function X` declarations
  * - `named`: `{ exported, local, src }` export-specifier triples;
  *   `src === null` means same-file
+ * - `namespaces`: `{ exported, src }` namespace re-export triples
  * - `stars`: `export * from '…'` sources (`export * as ns` excluded:
  *   it never brings bare names into scope)
  * - `imports`: local name → `{ src, imported }` (named, default, namespace)
@@ -30,6 +31,7 @@ export function analyzeFile(file, readFile) {
   const pendingLocal = new Map();
   const defaults = [];
   const stars = [];
+  const namespaces = [];
   const named = [];
   const imports = new Map();
   let exportEq = null;
@@ -48,7 +50,7 @@ export function analyzeFile(file, readFile) {
     if (ts.isImportDeclaration(st)) {
       recordImport(imports, st);
     } else if (ts.isExportDeclaration(st)) {
-      recordExport(named, stars, st);
+      recordExport(named, stars, namespaces, st);
     } else if (ts.isExportAssignment(st)) {
       if (st.isExportEquals) {
         exportEq = st.expression.getText(sf);
@@ -86,7 +88,7 @@ export function analyzeFile(file, readFile) {
       }
     }
   }
-  return { sf, local, pendingLocal, defaults, stars, named, imports, exportEq, exportDefault };
+  return { sf, local, pendingLocal, defaults, stars, namespaces, named, imports, exportEq, exportDefault };
 }
 
 function recordImport(imports, st) {
@@ -108,7 +110,7 @@ function recordImport(imports, st) {
   }
 }
 
-function recordExport(named, stars, st) {
+function recordExport(named, stars, namespaces, st) {
   if (!st.moduleSpecifier) {
     // Same-file `export {A, B as C}`.
     const clause = st.exportClause;
@@ -124,7 +126,10 @@ function recordExport(named, stars, st) {
     return;
   }
   const src = st.moduleSpecifier.text;
-  if (st.exportClause && ts.isNamespaceExport(st.exportClause)) return;
+  if (st.exportClause && ts.isNamespaceExport(st.exportClause)) {
+    namespaces.push({ exported: st.exportClause.name.text, src });
+    return;
+  }
   if (st.exportClause && ts.isNamedExports(st.exportClause)) {
     for (const e of st.exportClause.elements) {
       named.push({

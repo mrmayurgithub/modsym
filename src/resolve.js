@@ -4,8 +4,8 @@ import { analyzeFile } from './parse.js';
 import { pickEntryDts, pickSubpathTypes } from './entry.js';
 import {
   createTraversal,
+  resolveDependency,
   resolveFile,
-  selfSubpathRel,
   isRelativeSpecifier,
   isBareSpecifier,
   flavorOf,
@@ -42,7 +42,7 @@ export function resolveIn(root, symbol) {
 
   for (const entry of pickEntryDts(pkgJson)) {
     const file = resolveFile(path.join(root, 'package.json'), entry.rel);
-    if (file && traversal.enqueue(file, ['.'], symbol, entry.condition)) {
+    if (file && traversal.enqueue(file, ['.'], symbol, entry.condition, { fromStar: false })) {
       signals.entryFiles.push(file);
     }
   }
@@ -56,14 +56,34 @@ export function resolveIn(root, symbol) {
   }
 
   const ctx = { root, pkgJson, symbol, traversal, signals };
+  const starHits = [];
   while (queue.length > 0) {
     const item = queue.shift();
     const hit = processOne(ctx, item);
-    if (hit) return hit;
+    if (hit) {
+      if (hit.fromStar) {
+        collectStarHit(starHits, hit);
+      } else {
+        return traversal.complete ? hit : resolutionIncomplete(ctx);
+      }
+    }
+  }
+  if (starHits.length > 1) {
+    return {
+      status: 'ambiguous',
+      symbol,
+      reason: 'ambiguous',
+      candidates: starHits.map(hitToCandidate),
+      filesVisited: traversal.visitedCount,
+    };
+  }
+  if (starHits.length === 1) {
+    return traversal.complete ? stripStarHit(starHits[0]) : resolutionIncomplete(ctx);
   }
 
   const subpathHit = searchSubpaths(ctx);
   if (subpathHit) return subpathHit;
+  if (!traversal.complete) return resolutionIncomplete(ctx);
   return abstain(ctx);
 }
 
@@ -77,39 +97,18 @@ function readPackageJson(root) {
   return {};
 }
 
-/**
- * Resolve a specifier found in `file`. Relative specifiers resolve to
- * sibling declarations; the package's own name resolves through its
- * `exports` map (self-package re-exports); anything else is external
- * and out of scope (recorded for abstention reasons when relevant).
- */
 function resolveDep(ctx, file, spec, hooks = {}) {
-  if (!spec || spec.startsWith('#')) return null;
-  if (isRelativeSpecifier(spec)) return resolveFile(file, spec);
-  // Self-package re-exports (`export * from "zustand/vanilla"` inside zustand):
-  // resolve through the package's own exports map.
-  const pkgName = ctx.pkgJson.name;
-  if (pkgName && (spec === pkgName || spec.startsWith(`${pkgName}/`))) {
-    const subpath = spec === pkgName ? '.' : `./${spec.slice(pkgName.length + 1)}`;
-    const rel = selfSubpathRel(ctx.pkgJson, subpath);
-    if (rel) {
-      const abs = resolveFile(path.join(ctx.root, 'package.json'), rel);
-      if (abs) return abs;
-    }
-    if (hooks.onSelf) hooks.onSelf(spec);
-    return null;
-  }
-  if (hooks.onExternal) hooks.onExternal(spec);
-  return null;
+  return resolveDependency(ctx.root, ctx.pkgJson, file, spec, hooks);
 }
 
 function processOne(ctx, item) {
   const { root, symbol, traversal, signals } = ctx;
-  const { file, chain, seek, cond } = item;
+  const { file, chain, seek, cond, fromStar = false } = item;
   let parsed;
   try {
     parsed = analyzeFile(file, readUtf8);
   } catch {
+    traversal.markIncomplete();
     return null;
   }
   const rel = path.relative(root, file);
@@ -129,6 +128,7 @@ function processOne(ctx, item) {
     },
     filesVisited: traversal.visitedCount,
     method,
+    fromStar,
   });
 
   // 1. Direct exported declaration (overloads preserved as multiple records).
@@ -170,7 +170,7 @@ function processOne(ctx, item) {
       if (localImport.imported === '*') {
         const target = resolveDep(ctx, file, localImport.src);
         if (target) {
-          return namespaceHit(ctx, target, seek, chain, cond, localImport.src, `${localImport.src} (import * as ${localName})`);
+          return namespaceHit(ctx, target, seek, chain, cond, localImport.src, `${localImport.src} (import * as ${localName})`, fromStar);
         }
       } else {
         traversal.enqueue(
@@ -178,6 +178,7 @@ function processOne(ctx, item) {
           [...chain, `${localImport.src} (import ${localImport.imported} as ${localName})`],
           localImport.imported === 'default' ? seek : localImport.imported,
           cond,
+          { fromStar },
         );
       }
     }
@@ -194,7 +195,7 @@ function processOne(ctx, item) {
       if (imp.imported === '*') {
         const target = resolveDep(ctx, file, imp.src);
         if (target) {
-          return namespaceHit(ctx, target, seek, chain, cond, imp.src, `${imp.src} (import * as ${seek})`);
+          return namespaceHit(ctx, target, seek, chain, cond, imp.src, `${imp.src} (import * as ${seek})`, fromStar);
         }
       } else {
         traversal.enqueue(
@@ -202,6 +203,7 @@ function processOne(ctx, item) {
           [...chain, `${imp.src} (import ${imp.imported})`],
           imp.imported === 'default' ? seek : imp.imported,
           cond,
+          { fromStar },
         );
       }
     } else if (imp && isBareSpecifier(imp.src)) {
@@ -226,19 +228,45 @@ function processOne(ctx, item) {
       onExternal: src => signals.external.push({ name: seek, src }),
     });
     if (target) {
-      traversal.enqueue(target, [...chain, `${edge.src} (${edge.local} as ${edge.exported})`], edge.local, cond);
+      traversal.enqueue(target, [...chain, `${edge.src} (${edge.local} as ${edge.exported})`], edge.local, cond, { fromStar });
     }
   }
 
   // 7. Star re-exports (namespace stars were excluded at parse time).
   for (const src of parsed.stars) {
-    const target = resolveDep(ctx, file, src);
-    if (target) traversal.enqueue(target, [...chain, src], seek, cond);
+    const target = resolveDep(ctx, file, src, {
+      onUnresolved: () => traversal.markIncomplete(),
+    });
+    if (target) traversal.enqueue(target, [...chain, src], seek, cond, { fromStar: true });
   }
   return null;
 }
 
-function namespaceHit(ctx, target, seek, chain, cond, src, edgeLabel) {
+function collectStarHit(hits, hit) {
+  const key = `${hit.decl.file}:${hit.decl.line}:${hit.decl.kind}:${hit.decl.text}`;
+  if (!hits.some(existing => `${existing.decl.file}:${existing.decl.line}:${existing.decl.kind}:${existing.decl.text}` === key)) {
+    hits.push(hit);
+  }
+}
+
+function stripStarHit(hit) {
+  const { fromStar, ...rest } = hit;
+  return rest;
+}
+
+function hitToCandidate(hit) {
+  return {
+    file: hit.decl.file,
+    line: hit.decl.line,
+    kind: hit.decl.kind,
+    text: (hit.decl.text || '').slice(0, 200),
+    chain: hit.decl.chain,
+    condition: hit.decl.condition,
+    flavor: hit.decl.flavor,
+  };
+}
+
+function namespaceHit(ctx, target, seek, chain, cond, src, edgeLabel, fromStar = false) {
   return {
     status: 'resolved',
     symbol: ctx.symbol,
@@ -255,6 +283,7 @@ function namespaceHit(ctx, target, seek, chain, cond, src, edgeLabel) {
     },
     filesVisited: ctx.traversal.visitedCount,
     method: 'ts-ast-namespace-alias',
+    fromStar,
   };
 }
 
@@ -290,7 +319,10 @@ function searchSubpaths(ctx) {
   const exportsMap = pkgJson.exports;
   if (!exportsMap || typeof exportsMap !== 'object') return null;
   for (const [subpath, value] of Object.entries(exportsMap)) {
-    if (traversal.visitedCount >= 800) break;
+    if (traversal.visitedCount >= 800) {
+      traversal.markIncomplete();
+      break;
+    }
     if (subpath === '.' || subpath === './package.json' || subpath.includes('*')) continue;
     const rel = pickSubpathTypes(value);
     if (typeof rel !== 'string') continue;
@@ -299,6 +331,7 @@ function searchSubpaths(ctx) {
       [subpath],
       symbol,
       `exports["${subpath}"]`,
+      { fromStar: false },
     );
   }
   const candidates = [];
@@ -323,9 +356,13 @@ function searchSubpaths(ctx) {
         });
       }
     }
-    if (queue.length - before > MAX_BARREL_FANOUT) break;
+    if (queue.length - before > MAX_BARREL_FANOUT) {
+      traversal.markIncomplete();
+      break;
+    }
   }
   if (candidates.length === 1) {
+    if (!traversal.complete) return resolutionIncomplete(ctx);
     return {
       status: 'resolved',
       symbol,
@@ -351,8 +388,18 @@ function resolveFileSafe(ctx, rel) {
   try {
     return resolveFile(path.join(ctx.root, 'package.json'), rel);
   } catch {
+    ctx.traversal.markIncomplete();
     return null;
   }
+}
+
+function resolutionIncomplete(ctx) {
+  return {
+    status: 'not-resolved',
+    symbol: ctx.symbol,
+    reason: 'resolution_incomplete',
+    filesVisited: ctx.traversal.visitedCount,
+  };
 }
 
 function abstain(ctx) {

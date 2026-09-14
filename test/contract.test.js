@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serialize } from '../src/serialize.js';
@@ -98,6 +100,34 @@ describe('cli: behavior contract', () => {
       symbol: 'work',
       reason: 'no_types',
     });
+  });
+
+  it('distinguishes an external re-export from an incomplete external star sibling', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-contract-external-star-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-contract-external-star',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'index.d.ts'),
+      'export * from "./present.js";\nexport * from "external-package";\n',
+    );
+    fs.writeFileSync(path.join(dir, 'present.d.ts'), 'export declare const target: true;\n');
+
+    const externalIo = capture();
+    const incompleteIo = capture();
+    const externalCode = await run([fileSpec('fixture-external'), 'thing'], { ...externalIo, env: {} });
+    const incompleteCode = await run([`file:${dir}`, 'target'], { ...incompleteIo, env: {} });
+    const external = JSON.parse(externalIo.out);
+    const incomplete = JSON.parse(incompleteIo.out);
+
+    assert.equal(externalCode, 2);
+    assert.equal(external.reason, 'external_reexport');
+    assert.equal(external.external, 'some-external-pkg');
+    assert.equal(incompleteCode, 2);
+    assert.equal(incomplete.reason, 'resolution_incomplete');
+    assert.equal(Object.hasOwn(incomplete, 'external'), false);
   });
 
   it('rejects bad usage with exit 1 and a stderr line', async () => {

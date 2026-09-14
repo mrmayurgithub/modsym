@@ -74,17 +74,62 @@ Usage:
 
 ```bash
 modsym <package-spec> <symbol>
+modsym <package-spec> --list [--match <text>] [--limit <n>]
 ```
 
 JSON always goes to stdout. Exit code `0` when resolved, `2` for `not_resolved` / `ambiguous`, `1` for usage or operational errors (one line on stderr, no stack traces). No colors, no interaction, no extra logging. Packages are fetched into a content-addressed cache (`~/.cache/modsym`, overridable via `MODSYM_CACHE`); nothing is written to your working directory.
 
+When an agent does not know the exact exported symbol yet, list the package's
+root declaration API surface:
+
+```bash
+modsym zod@4.5.4 --list
+modsym pino --list --match log
+```
+
+`--list` is intentionally root-scoped: it follows the package's root
+declaration entry and root-visible barrels/re-exports, but it does not crawl
+every exported subpath. `--match` is a deterministic case-insensitive substring
+match against symbol names only; it is not fuzzy, semantic, or documentation
+search. Filtering happens before truncation. List output defaults to 100 shown
+exports and accepts `--limit <n>` up to a hard maximum of 500.
+
+```json
+{
+  "status": "listed",
+  "package": "zod",
+  "version": "4.5.4",
+  "scope": "root",
+  "match": null,
+  "exports": [
+    {
+      "name": "$brand"
+    }
+  ],
+  "total": 298,
+  "shown": 1,
+  "truncated": true,
+  "filesVisited": 7
+}
+```
+
+Each listed export always has a `name`. `kind`, `file`, and `line` appear only
+when they are cheaply and confidently available from the listing walk. Use
+`modsym <package-spec> <symbol>` after discovery for the exact declaration.
+If a traversal limit, read failure, or unresolved relative/self-package
+`export *` edge prevents a complete walk, list mode returns
+`status: "not_resolved"` with `reason: "resolution_incomplete"` and exit code
+`2`; it does not return a partial export list or an incomplete `total` as
+successful output.
+
 ## Output contract
 
-- `status`: `resolved` | `ambiguous` | `not_resolved` — all three are intentional outcomes.
+- `status`: `resolved` | `ambiguous` | `not_resolved` | `listed` — all are intentional outcomes.
 - `package` / `version` / `symbol`: what was resolved.
 - `declaration`: file, line, kind, signature text, and export condition (only when `resolved`).
 - `resolutionChain`: export subpaths followed (only when `resolved`).
 - `reason` / `candidates`: why resolution stopped, or a bounded candidate list (when `ambiguous` / `not_resolved`).
+- `exports` / `total` / `shown` / `truncated`: bounded root export discovery results (only when `listed`).
 
 `modsym` prefers an explicit abstention over returning a declaration it cannot resolve confidently. That is part of the product contract, not just a limitation:
 
@@ -102,9 +147,18 @@ modsym semver satisfies
 }
 ```
 
-Other reasons include `external_reexport`, `ambient_module`, `qualified_only`, `unsupported_export_form`, `default_only`, and `not_found`.
+Other reasons include `resolution_incomplete`, `external_reexport`,
+`ambient_module`, `qualified_only`, `unsupported_export_form`, `default_only`,
+and `not_found`.
 
-## Scope (v0.1)
+`resolution_incomplete` means modsym found an incomplete declaration-graph
+walk and therefore did not assert a result. This includes traversal limits,
+read failures, and unexamined `export *` edges whose relative/self-package
+target could not be resolved or whose external-package/`#imports` target is
+intentionally not traversed. In list mode, no partial export list or `total`
+is returned when completeness is not established.
+
+## Scope
 
 Supports bare exported TypeScript symbols in npm packages, including direct exports, barrels, `export *`, named re-exports, and same-file aliases.
 
@@ -112,7 +166,8 @@ Explicitly out of scope:
 
 - npm only (no other ecosystems)
 - declaration resolution only — no implementation/source lookup
-- no external-package re-export traversal
+- no external-package or package `#imports` re-export traversal
+- no full subpath crawling in list mode
 - no qualified (`ns.Sym`) or ambient symbol resolution
 - may truthfully return `not_resolved` or `ambiguous`
 
