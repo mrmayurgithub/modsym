@@ -25,6 +25,10 @@ export function listExportsIn(root) {
 
   for (const entry of pickEntryDts(pkgJson)) {
     const file = resolveFile(path.join(root, 'package.json'), entry.rel);
+    if (!file) {
+      if (entry.condition !== 'root-fallback') traversal.markIncomplete();
+      continue;
+    }
     traversal.enqueue(file, ['.'], null, entry.condition, { includeDefault: true, fromStar: false });
   }
   if (queue.length === 0) {
@@ -212,6 +216,9 @@ function mergeExport(a, b) {
   if (a.explicitConflict || b.explicitConflict) return { name: a.name, explicitConflict: true };
   if (a.signature && b.signature && a.signature !== b.signature) {
     return { name: a.name, explicitConflict: true };
+  }
+  if (!a.signature || !b.signature) {
+    return { name: a.name };
   }
 
   const out = { name: a.name };

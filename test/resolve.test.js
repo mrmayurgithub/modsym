@@ -564,6 +564,68 @@ describe('resolveIn: subpath completeness', () => {
   });
 });
 
+describe('resolveIn: phase 2 subpath candidate identity', () => {
+  function sameFileDifferentSeekFixture() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-subpath-identity-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-subpath-identity',
+      version: '1.0.0',
+      types: './index.d.ts',
+      exports: {
+        '.': { types: './index.d.ts' },
+        './feature': { types: './feature.d.ts' },
+      },
+    }));
+    fs.writeFileSync(path.join(dir, 'index.d.ts'), 'export {};\n');
+    fs.writeFileSync(path.join(dir, 'feature.d.ts'),
+      'export { A as target } from "./shared.js";\nexport { B as target } from "./shared.js";\n');
+    fs.writeFileSync(path.join(dir, 'shared.d.ts'),
+      'export declare function A(): void;\nexport declare const B: number;\n');
+    return dir;
+  }
+
+  it('reports ambiguous for same-file different-declaration subpath candidates', () => {
+    const result = resolveIn(sameFileDifferentSeekFixture(), 'target');
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.reason, 'ambiguous');
+    assert.equal(result.candidates.length, 2);
+  });
+
+  it('deduplicates declaration-flavor mirrors of the same declaration', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-subpath-mirror-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-subpath-mirror',
+      version: '1.0.0',
+      types: './index.d.ts',
+      exports: {
+        '.': { types: './index.d.ts' },
+        './a': { types: './a.d.ts' },
+        './b': { types: './b.d.ts' },
+      },
+    }));
+    fs.writeFileSync(path.join(dir, 'index.d.ts'), 'export {};\n');
+    fs.writeFileSync(path.join(dir, 'a.d.ts'), 'export { X as target } from "./shared.js";\n');
+    fs.writeFileSync(path.join(dir, 'b.d.ts'), 'export { X as target } from "./shared.mjs";\n');
+    fs.writeFileSync(path.join(dir, 'shared.d.ts'), 'export declare function X(): void;\n');
+    fs.writeFileSync(path.join(dir, 'shared.d.mts'), 'export declare function X(): void;\n');
+    const result = resolveIn(dir, 'target');
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.decl.text, 'export declare function X(): void;');
+  });
+
+  it('resolves a single subpath hit', () => {
+    const result = resolveIn(root('fixture-exports'), 'alpha');
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.decl.file, 'alpha.d.ts');
+  });
+
+  it('preserves missing-advertised-subpath incompleteness', () => {
+    const result = resolveIn(cleanSubpathWithMissingSiblingFixture(), 'onlyClean');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+});
+
 describe('resolveIn: nested explicit re-export shadowing', () => {
   it('keeps the shadowing exception scoped to the file that has the explicit edge', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-nested-shadowing-'));
@@ -794,5 +856,170 @@ describe('resolveIn: star export ambiguity', () => {
     assert.equal(incomplete.status, 'not-resolved');
     assert.equal(incomplete.reason, 'resolution_incomplete');
     assert.equal(incomplete.external, undefined);
+  });
+});
+
+describe('resolveIn: missing advertised root entries', () => {
+  function missingAdvertisedRootFixture() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-missing-root-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-missing-root',
+      version: '1.0.0',
+      exports: { '.': { import: './import.mjs', require: './require.cjs' } },
+    }));
+    fs.writeFileSync(path.join(dir, 'require.d.cts'), 'export declare function Foo(): void;\n');
+    return dir;
+  }
+
+  it('abstains when one advertised conditional root entry is missing', () => {
+    const result = resolveIn(missingAdvertisedRootFixture(), 'Foo');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('resolves when conditional entries agree', () => {
+    const result = resolveIn(conditionalEntryFixture({
+      esm: 'export declare function shared(input: string): string;\n',
+      cjs: '// CommonJS entry\nexport declare function shared(input: string): string;\n',
+    }), 'shared');
+    assert.equal(result.status, 'resolved');
+  });
+
+  it('preserves root index fallback behavior', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-fallback-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', version: '1.0.0' }));
+    fs.writeFileSync(path.join(dir, 'index.d.ts'), 'export declare function Foo(): void;\n');
+    const result = resolveIn(dir, 'Foo');
+    assert.equal(result.status, 'resolved');
+  });
+});
+
+describe('resolveIn: unresolved import-traced siblings', () => {
+  function importTracedConditionalFixture(cjs) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-import-trace-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-import-trace',
+      version: '1.0.0',
+      exports: { '.': { import: './a.mjs', require: './b.cjs' } },
+    }));
+    fs.writeFileSync(path.join(dir, 'a.d.mts'), 'export declare function Foo(): void;\n');
+    fs.writeFileSync(path.join(dir, 'b.d.cts'), cjs);
+    return dir;
+  }
+
+  it('abstains when a sibling branch has a missing direct imported Foo', () => {
+    const result = resolveIn(importTracedConditionalFixture(
+      'import { Foo } from "./missing.js";\nexport { Foo };\n',
+    ), 'Foo');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('abstains when a sibling branch has a missing aliased imported Foo', () => {
+    const result = resolveIn(importTracedConditionalFixture(
+      'import { Foo as LocalFoo } from "./missing.js";\nexport { LocalFoo as Foo };\n',
+    ), 'Foo');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('resolves existing import-traced fixtures', () => {
+    const result = resolveIn(root('fixture-importtrace'), 'Widget');
+    assert.equal(result.status, 'resolved');
+  });
+});
+
+describe('resolveIn: external exact named siblings', () => {
+  function localPlusExternalFixture() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-ext-sibling-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-ext-sibling', version: '1.0.0', types: './index.d.ts',
+    }));
+    fs.writeFileSync(path.join(dir, 'index.d.ts'),
+      'export declare function Foo(): void;\nexport { Foo } from "external-package";\n');
+    return dir;
+  }
+  function conditionalLocalPlusExternalFixture() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-ext-cond-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-ext-cond', version: '1.0.0',
+      exports: { '.': { import: './a.mjs', require: './b.cjs' } },
+    }));
+    fs.writeFileSync(path.join(dir, 'a.d.mts'), 'export declare function Foo(): void;\n');
+    fs.writeFileSync(path.join(dir, 'b.d.cts'), 'export { Foo } from "external-package";\n');
+    return dir;
+  }
+
+  it('abstains when a same-file local declaration has an external exact named sibling', () => {
+    const result = resolveIn(localPlusExternalFixture(), 'Foo');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('abstains when a conditional local entry has an external exact named branch', () => {
+    const result = resolveIn(conditionalLocalPlusExternalFixture(), 'Foo');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('keeps sole external named re-export as external_reexport', () => {
+    const result = resolveIn(root('fixture-external'), 'thing');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'external_reexport');
+  });
+
+  it('explicit local named export still shadows an external star', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-explicit-star-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-explicit-star', version: '1.0.0', types: './index.d.ts',
+    }));
+    fs.writeFileSync(path.join(dir, 'index.d.ts'),
+      'export { Foo } from "./foo.js";\nexport * from "external-package";\n');
+    fs.writeFileSync(path.join(dir, 'foo.d.ts'), 'export declare function Foo(): void;\n');
+    const result = resolveIn(dir, 'Foo');
+    assert.equal(result.status, 'resolved');
+  });
+});
+
+describe('resolveIn: namespace-export siblings', () => {
+  function directPlusNamespaceFixture(nsLine, extraFiles = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-ns-sibling-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-ns-sibling', version: '1.0.0', types: './index.d.ts',
+    }));
+    fs.writeFileSync(path.join(dir, 'index.d.ts'),
+      `export declare const Foo: number;\n${nsLine}\n`);
+    for (const [name, content] of Object.entries(extraFiles)) {
+      fs.writeFileSync(path.join(dir, name), content);
+    }
+    return dir;
+  }
+
+  it('abstains when a direct Foo has a missing namespace sibling', () => {
+    const result = resolveIn(
+      directPlusNamespaceFixture('export * as Foo from "./missing.js";'), 'Foo');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('abstains when a direct Foo has a resolvable namespace sibling', () => {
+    const result = resolveIn(directPlusNamespaceFixture('export * as Foo from "./ns.js";', {
+      'ns.d.ts': 'export declare const a: number;\n',
+    }), 'Foo');
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('preserves standalone namespace alias behavior', () => {
+    const result = resolveIn(root('fixture-namespace'), 'toolkit');
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.decl.kind, 'namespace');
+  });
+
+  it('preserves namespace/star sibling behavior', () => {
+    const conflict = resolveIn(namespaceWithStarSiblingFixture('export declare const toolkit: number;\n'), 'toolkit');
+    assert.notEqual(conflict.status, 'resolved');
+    const compatible = resolveIn(namespaceWithStarSiblingFixture('export declare const unrelated: true;\n'), 'toolkit');
+    assert.equal(compatible.status, 'resolved');
   });
 });

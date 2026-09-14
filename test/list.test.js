@@ -71,6 +71,17 @@ function conditionalListFixture({ esm, cjs }) {
   return dir;
 }
 
+function missingAdvertisedListFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-list-missing-root-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture-list-missing-root',
+    version: '1.0.0',
+    exports: { '.': { import: './import.mjs', require: './require.cjs' } },
+  }));
+  fs.writeFileSync(path.join(dir, 'require.d.cts'), 'export declare function Foo(): void;\n');
+  return dir;
+}
+
 describe('listExportsIn: root public export surface', () => {
   it('lists direct declarations, export stars, barrels, renames, and aliases', () => {
     const result = listExportsIn(root('fixture-barrel'));
@@ -352,6 +363,62 @@ describe('listExportsIn: root public export surface', () => {
       reason: 'resolution_incomplete',
       filesVisited: 2,
     });
+  });
+
+  it('abstains when one advertised conditional root entry is missing', () => {
+    const result = listExportsIn(missingAdvertisedListFixture());
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('lists agreeing conditional entries', () => {
+    const result = listExportsIn(conditionalListFixture({
+      esm: 'export declare function Foo(): void;\n',
+      cjs: 'export declare function Foo(): void;\n',
+    }));
+    assert.equal(result.status, 'listed');
+    assert.deepEqual(result.exports.map(item => item.name), ['Foo']);
+  });
+
+  it('lists name-only when a known entry merges with an unknown-metadata sibling', () => {
+    const result = listExportsIn(conditionalListFixture({
+      esm: 'export { Foo } from "external-package";\n',
+      cjs: 'export declare function Foo(): void;\n',
+    }));
+    assert.equal(result.status, 'listed');
+    assert.deepEqual(result.exports, [{ name: 'Foo' }]);
+  });
+
+  it('lists name-only regardless of merge order', () => {
+    const fwd = listExportsIn(conditionalListFixture({
+      esm: 'export { Foo } from "external-package";\n',
+      cjs: 'export declare function Foo(): void;\n',
+    }));
+    const rev = listExportsIn(conditionalListFixture({
+      esm: 'export declare function Foo(): void;\n',
+      cjs: 'export { Foo } from "external-package";\n',
+    }));
+    assert.deepEqual(fwd.exports, [{ name: 'Foo' }]);
+    assert.deepEqual(rev.exports, [{ name: 'Foo' }]);
+  });
+
+  it('retains metadata for two agreeing known entries', () => {
+    const result = listExportsIn(conditionalListFixture({
+      esm: 'export declare function Foo(): void;\n',
+      cjs: 'export declare function Foo(): void;\n',
+    }));
+    assert.equal(result.status, 'listed');
+    assert.equal(result.exports[0].name, 'Foo');
+    assert.equal(result.exports[0].kind, 'function');
+  });
+
+  it('abstains on a genuine known conflict', () => {
+    const result = listExportsIn(conditionalListFixture({
+      esm: 'export declare function Foo(): void;\n',
+      cjs: 'export declare const Foo: number;\n',
+    }));
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
   });
 });
 

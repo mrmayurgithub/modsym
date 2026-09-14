@@ -42,6 +42,10 @@ export function resolveIn(root, symbol) {
 
   for (const entry of pickEntryDts(pkgJson)) {
     const file = resolveFile(path.join(root, 'package.json'), entry.rel);
+    if (!file) {
+      if (entry.condition !== 'root-fallback') traversal.markIncomplete();
+      continue;
+    }
     if (file && traversal.enqueue(file, ['.'], symbol, entry.condition, {
       fromStar: false,
       entryId: entry.rel,
@@ -80,6 +84,7 @@ export function resolveIn(root, symbol) {
   }
   if (deferredConcreteHits.length > 0) {
     if (!traversal.complete) return resolutionIncomplete(ctx);
+    if (signals.external.some(e => e.name === symbol)) return resolutionIncomplete(ctx);
     const competingStars = starHits.filter(star => !deferredConcreteHits.some(hit =>
       hit.fromExplicitNamed && hit.entryId === star.entryId,
     ));
@@ -220,7 +225,9 @@ function processOne(ctx, item) {
           }
         } else {
           traversal.enqueue(
-            resolveDep(ctx, file, localImport.src),
+            resolveDep(ctx, file, localImport.src, {
+              onUnresolved: () => traversal.markIncomplete(),
+            }),
             [...chain, `${localImport.src} (import ${localImport.imported} as ${localName})`],
             localImport.imported === 'default' ? seek : localImport.imported,
             cond,
@@ -254,7 +261,9 @@ function processOne(ctx, item) {
         }
       } else {
         traversal.enqueue(
-          resolveDep(ctx, file, imp.src),
+          resolveDep(ctx, file, imp.src, {
+            onUnresolved: () => traversal.markIncomplete(),
+          }),
           [...chain, `${imp.src} (import ${imp.imported})`],
           imp.imported === 'default' ? seek : imp.imported,
           cond,
@@ -322,6 +331,9 @@ function probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, fromStar, ent
     );
   }
   let enqueuedStarSibling = false;
+  if (parsed.namespaces.some(n => n.exported === seek)) {
+    traversal.markIncomplete();
+  }
   for (const src of parsed.stars) {
     const target = resolveDep(ctx, file, src, {
       onUnresolved: () => traversal.markIncomplete(),
@@ -451,7 +463,7 @@ function searchSubpaths(ctx) {
     const item = queue.shift();
     const hit = processOne(ctx, item);
     if (hit && hit.status === 'resolved') {
-      const key = hit.decl.file.replace(/\.d\.(m|c)?ts$/, '');
+      const key = `${hit.decl.file.replace(/\.d\.(m|c)?ts$/, '')}:${hit.decl.line}:${signatureKey(hit)}`;
       if (!seen.has(key)) {
         seen.add(key);
         candidates.push({
