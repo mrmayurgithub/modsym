@@ -42,7 +42,11 @@ export function resolveIn(root, symbol) {
 
   for (const entry of pickEntryDts(pkgJson)) {
     const file = resolveFile(path.join(root, 'package.json'), entry.rel);
-    if (file && traversal.enqueue(file, ['.'], symbol, entry.condition, { fromStar: false })) {
+    if (file && traversal.enqueue(file, ['.'], symbol, entry.condition, {
+      fromStar: false,
+      entryId: entry.rel,
+      fromExplicitNamed: false,
+    })) {
       signals.entryFiles.push(file);
     }
   }
@@ -57,23 +61,29 @@ export function resolveIn(root, symbol) {
 
   const ctx = { root, pkgJson, symbol, traversal, signals };
   const starHits = [];
-  const deferredDirectHits = [];
+  const deferredConcreteHits = [];
   while (queue.length > 0) {
     const item = queue.shift();
     const hit = processOne(ctx, item);
     if (hit) {
       if (hit.fromStar) {
         collectStarHit(starHits, hit);
-      } else if (hit.deferForStarSiblings) {
-        collectStarHit(deferredDirectHits, hit);
+      } else if (hit.method !== 'ts-ast-namespace-alias' || hit.deferForSiblingChecks) {
+        // Root entries and named re-export branches can be queued alongside
+        // this concrete hit. Defer until all of them have had a chance to
+        // produce the same bare symbol; queue order must not choose a winner.
+        collectStarHit(deferredConcreteHits, hit);
       } else {
         return traversal.complete ? hit : resolutionIncomplete(ctx);
       }
     }
   }
-  if (deferredDirectHits.length > 0) {
+  if (deferredConcreteHits.length > 0) {
     if (!traversal.complete) return resolutionIncomplete(ctx);
-    const allHits = [...deferredDirectHits, ...starHits];
+    const competingStars = starHits.filter(star => !deferredConcreteHits.some(hit =>
+      hit.fromExplicitNamed && hit.entryId === star.entryId,
+    ));
+    const allHits = [...deferredConcreteHits, ...competingStars];
     const signatures = new Set(allHits.map(signatureKey));
     if (signatures.size > 1) {
       return {
@@ -84,7 +94,7 @@ export function resolveIn(root, symbol) {
         filesVisited: traversal.visitedCount,
       };
     }
-    return stripInternalHit(deferredDirectHits[0]);
+    return stripInternalHit(deferredConcreteHits[0]);
   }
   if (starHits.length > 1) {
     return {
@@ -134,7 +144,7 @@ function resolveNamedReexport(ctx, file, edge, seek) {
 
 function processOne(ctx, item) {
   const { root, symbol, traversal, signals } = ctx;
-  const { file, chain, seek, cond, fromStar = false } = item;
+  const { file, chain, seek, cond, fromStar = false, entryId, fromExplicitNamed = false } = item;
   let parsed;
   try {
     parsed = analyzeFile(file, readUtf8);
@@ -160,6 +170,8 @@ function processOne(ctx, item) {
     filesVisited: traversal.visitedCount,
     method,
     fromStar,
+    entryId,
+    fromExplicitNamed,
   });
   let directHit = null;
 
@@ -201,7 +213,10 @@ function processOne(ctx, item) {
         if (localImport.imported === '*') {
           const target = resolveDep(ctx, file, localImport.src);
           if (target) {
-            return namespaceHit(ctx, target, seek, chain, cond, localImport.src, `${localImport.src} (import * as ${localName})`, fromStar);
+            const hit = namespaceHit(ctx, target, seek, chain, cond, localImport.src, `${localImport.src} (import * as ${localName})`, fromStar, entryId, fromExplicitNamed);
+            probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, fromExplicitNamed);
+            hit.deferForSiblingChecks = true;
+            return hit;
           }
         } else {
           traversal.enqueue(
@@ -209,7 +224,7 @@ function processOne(ctx, item) {
             [...chain, `${localImport.src} (import ${localImport.imported} as ${localName})`],
             localImport.imported === 'default' ? seek : localImport.imported,
             cond,
-            { fromStar },
+            { fromStar, entryId, fromExplicitNamed },
           );
         }
       }
@@ -220,9 +235,7 @@ function processOne(ctx, item) {
   }
   if (directHit) {
     collectSignals(ctx, signals, file, parsed, seek);
-    if (probeDirectHitEdges(ctx, file, parsed, seek, chain, cond)) {
-      directHit.deferForStarSiblings = true;
-    }
+    probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, fromExplicitNamed);
     return directHit;
   }
 
@@ -234,7 +247,10 @@ function processOne(ctx, item) {
       if (imp.imported === '*') {
         const target = resolveDep(ctx, file, imp.src);
         if (target) {
-          return namespaceHit(ctx, target, seek, chain, cond, imp.src, `${imp.src} (import * as ${seek})`, fromStar);
+          const hit = namespaceHit(ctx, target, seek, chain, cond, imp.src, `${imp.src} (import * as ${seek})`, fromStar, entryId, fromExplicitNamed);
+          probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, fromExplicitNamed);
+          hit.deferForSiblingChecks = true;
+          return hit;
         }
       } else {
         traversal.enqueue(
@@ -242,7 +258,7 @@ function processOne(ctx, item) {
           [...chain, `${imp.src} (import ${imp.imported})`],
           imp.imported === 'default' ? seek : imp.imported,
           cond,
-          { fromStar },
+          { fromStar, entryId, fromExplicitNamed },
         );
       }
     } else if (imp && isBareSpecifier(imp.src)) {
@@ -267,7 +283,11 @@ function processOne(ctx, item) {
     const target = resolveNamedReexport(ctx, file, edge, seek);
     if (target) {
       explicitLocalReexport = true;
-      traversal.enqueue(target, [...chain, `${edge.src} (${edge.local} as ${edge.exported})`], edge.local, cond, { fromStar });
+      traversal.enqueue(target, [...chain, `${edge.src} (${edge.local} as ${edge.exported})`], edge.local, cond, {
+        fromStar,
+        entryId,
+        fromExplicitNamed: !fromStar,
+      });
     }
   }
 
@@ -278,12 +298,16 @@ function processOne(ctx, item) {
         if (!explicitLocalReexport) traversal.markIncomplete();
       },
     });
-    if (target) traversal.enqueue(target, [...chain, src], seek, cond, { fromStar: true });
+    if (target) traversal.enqueue(target, [...chain, src], seek, cond, {
+      fromStar: true,
+      entryId,
+      fromExplicitNamed,
+    });
   }
   return null;
 }
 
-function probeDirectHitEdges(ctx, file, parsed, seek, chain, cond) {
+function probeDirectHitEdges(ctx, file, parsed, seek, chain, cond, entryId, fromExplicitNamed) {
   const { traversal } = ctx;
   for (const edge of parsed.named.filter(n => n.exported === seek && n.src)) {
     resolveNamedReexport(ctx, file, edge, seek);
@@ -293,7 +317,11 @@ function probeDirectHitEdges(ctx, file, parsed, seek, chain, cond) {
     const target = resolveDep(ctx, file, src, {
       onUnresolved: () => traversal.markIncomplete(),
     });
-    if (target && traversal.enqueue(target, [...chain, src], seek, cond, { fromStar: true })) {
+    if (target && traversal.enqueue(target, [...chain, src], seek, cond, {
+      fromStar: true,
+      entryId,
+      fromExplicitNamed,
+    })) {
       enqueuedStarSibling = true;
     }
   }
@@ -312,7 +340,7 @@ function stripStarHit(hit) {
 }
 
 function stripInternalHit(hit) {
-  const { fromStar, deferForStarSiblings, ...rest } = hit;
+  const { fromStar, entryId, fromExplicitNamed, deferForSiblingChecks, ...rest } = hit;
   return rest;
 }
 
@@ -332,7 +360,7 @@ function hitToCandidate(hit) {
   };
 }
 
-function namespaceHit(ctx, target, seek, chain, cond, src, edgeLabel, fromStar = false) {
+function namespaceHit(ctx, target, seek, chain, cond, src, edgeLabel, fromStar = false, entryId, fromExplicitNamed = false) {
   return {
     status: 'resolved',
     symbol: ctx.symbol,
@@ -350,6 +378,8 @@ function namespaceHit(ctx, target, seek, chain, cond, src, edgeLabel, fromStar =
     filesVisited: ctx.traversal.visitedCount,
     method: 'ts-ast-namespace-alias',
     fromStar,
+    entryId,
+    fromExplicitNamed,
   };
 }
 

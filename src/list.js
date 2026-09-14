@@ -41,7 +41,7 @@ export function listExportsIn(root) {
   while (queue.length > 0) {
     processListFile(ctx, queue.shift(), exports);
   }
-  if (!traversal.complete) {
+  if (!traversal.complete || [...exports.values()].some(item => item.explicitConflict)) {
     return {
       status: 'not-resolved',
       reason: 'resolution_incomplete',
@@ -174,6 +174,7 @@ function declMeta(ctx, file, decls, cond) {
     kind: first.kind,
     file: path.relative(ctx.root, file),
     line: first.line,
+    signature: `${first.kind}:${first.text}`,
     condition: cond ?? null,
     flavor: flavorOf(file),
   };
@@ -196,6 +197,7 @@ function cleanMeta(name, meta, opts = {}) {
   if (meta?.kind) out.kind = String(meta.kind);
   if (meta?.file) out.file = String(meta.file);
   if (Number.isInteger(meta?.line) && meta.line > 0) out.line = meta.line;
+  if (meta?.signature) out.signature = String(meta.signature);
   return out;
 }
 
@@ -207,6 +209,10 @@ function mergeExport(a, b) {
   if (a.starConflict && !b.fromStar) return { ...b };
   if (a.fromStar && !b.fromStar) return { ...b };
   if (!a.fromStar && b.fromStar) return { ...a };
+  if (a.explicitConflict || b.explicitConflict) return { name: a.name, explicitConflict: true };
+  if (a.signature && b.signature && a.signature !== b.signature) {
+    return { name: a.name, explicitConflict: true };
+  }
 
   const out = { name: a.name };
   for (const key of ['kind', 'file', 'line']) {
@@ -216,6 +222,7 @@ function mergeExport(a, b) {
       out[key] = a[key];
     }
   }
+  if (a.signature || b.signature) out.signature = a.signature || b.signature;
   if (out.file === undefined) delete out.line;
   return out;
 }
@@ -225,7 +232,7 @@ function compareExport(a, b) {
 }
 
 function stripInternal(item) {
-  const { fromStar, starConflict, ...publicItem } = item;
+  const { fromStar, starConflict, explicitConflict, signature, ...publicItem } = item;
   return publicItem;
 }
 

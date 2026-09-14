@@ -54,6 +54,23 @@ function unexaminedStarListFixture(specifier) {
   return dir;
 }
 
+function conditionalListFixture({ esm, cjs }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-list-conditional-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture-list-conditional',
+    version: '1.0.0',
+    exports: {
+      '.': {
+        import: './index.mjs',
+        require: './index.cjs',
+      },
+    },
+  }));
+  fs.writeFileSync(path.join(dir, 'index.d.mts'), esm);
+  fs.writeFileSync(path.join(dir, 'index.d.cts'), cjs);
+  return dir;
+}
+
 describe('listExportsIn: root public export surface', () => {
   it('lists direct declarations, export stars, barrels, renames, and aliases', () => {
     const result = listExportsIn(root('fixture-barrel'));
@@ -172,6 +189,30 @@ describe('listExportsIn: root public export surface', () => {
       kind: 'class',
       file: 'dist/source/core/options.d.ts',
       line: 1,
+    });
+  });
+
+  it('does not claim a complete list when conditional entries disagree', () => {
+    const result = listExportsIn(conditionalListFixture({
+      esm: 'export declare function conflict(): void;\n',
+      cjs: 'export declare const conflict: number;\n',
+    }));
+
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+
+  it('lists a conditional export when entries agree', () => {
+    const result = listExportsIn(conditionalListFixture({
+      esm: 'export declare function shared(): void;\n',
+      cjs: '// CommonJS entry\nexport declare function shared(): void;\n',
+    }));
+
+    assert.deepEqual(result, {
+      status: 'listed',
+      scope: 'root',
+      exports: [{ name: 'shared', kind: 'function' }],
+      filesVisited: 2,
     });
   });
 

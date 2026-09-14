@@ -158,6 +158,11 @@ target could not be resolved or whose external-package/`#imports` target is
 intentionally not traversed. In list mode, no partial export list or `total`
 is returned when completeness is not established.
 
+Subpath fallback is deliberately package-wide and conservative: if any visited
+subpath leaves the declaration walk incomplete, modsym abstains even when a
+different subpath contains the only otherwise-resolved declaration. This keeps
+fallback resolution from asserting uniqueness it has not fully checked.
+
 ## Scope
 
 Supports bare exported TypeScript symbols in npm packages, including direct exports, barrels, `export *`, named re-exports, and same-file aliases.

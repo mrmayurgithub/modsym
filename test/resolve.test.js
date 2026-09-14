@@ -43,20 +43,71 @@ function directHitWithStarSiblingFixture(specifier) {
   return dir;
 }
 
-function conditionalEntryFixture({ esm, cjs }) {
+function conditionalEntryFixture({ esm, cjs, conditionOrder = 'import-first' }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-conditional-'));
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
     name: 'fixture-resolve-conditional',
     version: '1.0.0',
     exports: {
-      '.': {
-        import: './index.mjs',
-        require: './index.cjs',
-      },
+      '.': conditionOrder === 'require-first'
+        ? { require: './index.cjs', import: './index.mjs' }
+        : { import: './index.mjs', require: './index.cjs' },
     },
   }));
   fs.writeFileSync(path.join(dir, 'index.d.mts'), esm);
   fs.writeFileSync(path.join(dir, 'index.d.cts'), cjs);
+  return dir;
+}
+
+function queuedStarConditionalFixture({ left, right }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-queued-star-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture-resolve-queued-star',
+    version: '1.0.0',
+    exports: {
+      '.': {
+        import: './import.mjs',
+        require: './require.cjs',
+      },
+    },
+  }));
+  fs.writeFileSync(path.join(dir, 'import.d.mts'), 'export declare function Foo(): void;\n');
+  fs.writeFileSync(path.join(dir, 'require.d.cts'), 'export * from "./left.js";\nexport * from "./right.js";\n');
+  fs.writeFileSync(path.join(dir, 'left.d.ts'), left);
+  fs.writeFileSync(path.join(dir, 'right.d.ts'), right);
+  return dir;
+}
+
+function namespaceWithStarSiblingFixture(sibling) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-namespace-star-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture-resolve-namespace-star',
+    version: '1.0.0',
+    types: './index.d.ts',
+  }));
+  fs.writeFileSync(
+    path.join(dir, 'index.d.ts'),
+    'import * as toolkit from "./tools.js";\nexport { toolkit };\nexport * from "./sibling.js";\n',
+  );
+  fs.writeFileSync(path.join(dir, 'tools.d.ts'), 'export declare function hammer(): void;\n');
+  fs.writeFileSync(path.join(dir, 'sibling.d.ts'), sibling);
+  return dir;
+}
+
+function cleanSubpathWithBrokenSiblingFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-subpath-completeness-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture-resolve-subpath-completeness',
+    version: '1.0.0',
+    exports: {
+      '.': { types: './index.d.ts' },
+      './clean': { types: './clean.d.ts' },
+      './broken': { types: './broken.d.ts' },
+    },
+  }));
+  fs.writeFileSync(path.join(dir, 'index.d.ts'), 'export {};\n');
+  fs.writeFileSync(path.join(dir, 'clean.d.ts'), 'export declare function onlyClean(): void;\n');
+  fs.writeFileSync(path.join(dir, 'broken.d.ts'), 'export * from "external-package";\n');
   return dir;
 }
 
@@ -351,6 +402,110 @@ describe('resolveIn: root conditional entries', () => {
     assert.equal(result.status, 'resolved');
     assert.equal(result.decl.kind, 'function');
     assert.equal(result.decl.text, 'export declare function shared(input: string): string;');
+  });
+
+  it('is independent of conditional entry object order', () => {
+    const fixture = {
+      esm: 'export declare function ordered(input: string): string;\n',
+      cjs: 'export declare const ordered: number;\n',
+    };
+    const importFirst = resolveIn(conditionalEntryFixture(fixture), 'ordered');
+    const requireFirst = resolveIn(conditionalEntryFixture({ ...fixture, conditionOrder: 'require-first' }), 'ordered');
+
+    assert.equal(importFirst.status, 'ambiguous');
+    assert.equal(requireFirst.status, 'ambiguous');
+    assert.deepEqual(importFirst.candidates.map(candidate => candidate.condition).sort(), requireFirst.candidates.map(candidate => candidate.condition).sort());
+  });
+
+  it('distinguishes same-kind conditional declarations by signature text', () => {
+    const result = resolveIn(conditionalEntryFixture({
+      esm: 'export declare function sameKind(input: string): string;\n',
+      cjs: 'export declare function sameKind(input: number): number;\n',
+    }), 'sameKind');
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.candidates.length, 2);
+  });
+});
+
+describe('resolveIn: competing queued root branches', () => {
+  it('does not return a direct entry hit before a queued star conflict is examined', () => {
+    const result = resolveIn(queuedStarConditionalFixture({
+      left: 'export declare function Foo(): void;\n',
+      right: 'export declare const Foo: number;\n',
+    }), 'Foo');
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.reason, 'ambiguous');
+    assert.deepEqual(result.candidates.map(candidate => candidate.text).sort(), [
+      'export declare const Foo: number;',
+      'export declare function Foo(): void;',
+      'export declare function Foo(): void;',
+    ]);
+  });
+
+  it('resolves when a direct entry hit and queued star branches agree', () => {
+    const result = resolveIn(queuedStarConditionalFixture({
+      left: 'export declare function Foo(): void;\n',
+      right: 'export declare function Foo(): void;\n',
+    }), 'Foo');
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.decl.text, 'export declare function Foo(): void;');
+  });
+});
+
+describe('resolveIn: namespace hits with star siblings', () => {
+  it('does not choose a namespace alias over a conflicting star sibling', () => {
+    const result = resolveIn(namespaceWithStarSiblingFixture('export declare const toolkit: number;\n'), 'toolkit');
+
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.reason, 'ambiguous');
+  });
+
+  it('resolves a namespace alias when a star sibling is compatible', () => {
+    const result = resolveIn(namespaceWithStarSiblingFixture('export declare const unrelated: true;\n'), 'toolkit');
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.decl.kind, 'namespace');
+  });
+});
+
+describe('resolveIn: subpath completeness', () => {
+  it('conservatively abstains when an unrelated sibling subpath is incomplete', () => {
+    const result = resolveIn(cleanSubpathWithBrokenSiblingFixture(), 'onlyClean');
+
+    assert.equal(result.status, 'not-resolved');
+    assert.equal(result.reason, 'resolution_incomplete');
+  });
+});
+
+describe('resolveIn: nested explicit re-export shadowing', () => {
+  it('keeps the shadowing exception scoped to the file that has the explicit edge', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-resolve-nested-shadowing-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-resolve-nested-shadowing',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'index.d.ts'),
+      'export { Foo } from "./mid.js";\nexport * from "external-package";\n',
+    );
+    fs.writeFileSync(
+      path.join(dir, 'mid.d.ts'),
+      'export { Foo } from "./leaf.js";\nexport * from "./clean.js";\n',
+    );
+    fs.writeFileSync(path.join(dir, 'leaf.d.ts'), 'export declare function Foo(): void;\n');
+    fs.writeFileSync(path.join(dir, 'clean.d.ts'), 'export declare const Clean: true;\n');
+
+    const foo = resolveIn(dir, 'Foo');
+    const other = resolveIn(dir, 'Other');
+
+    assert.equal(foo.status, 'resolved');
+    assert.equal(foo.decl.file, 'leaf.d.ts');
+    assert.equal(other.status, 'not-resolved');
+    assert.equal(other.reason, 'resolution_incomplete');
   });
 });
 
