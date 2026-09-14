@@ -94,7 +94,7 @@ describe('selfSubpathRel', () => {
 });
 
 describe('createTraversal', () => {
-  it('refuses non-declaration files and dedupes mirrors', () => {
+  it('refuses non-declaration files and dedupes exact traversal states', () => {
     const t = createTraversal();
     assert.equal(t.enqueue(path.join(dir, 'plain.js'), ['.'], 'b'), false);
     assert.equal(t.enqueue(path.join(dir, 'a.d.ts'), ['.'], 'a'), true);

@@ -98,7 +98,7 @@ function processListFile(ctx, item, exports) {
   }
 
   for (const edge of parsed.namespaces) {
-    const target = resolveDependency(ctx.root, ctx.pkgJson, file, edge.src);
+    const target = resolveMetadataDependency(ctx, file, edge.src);
     addExport(exports, edge.exported, target ? { kind: 'namespace' } : null, { fromStar });
   }
 
@@ -111,7 +111,7 @@ function processListFile(ctx, item, exports) {
 }
 
 function metadataForRemote(ctx, file, spec, local, cond, seen = new Set()) {
-  const target = resolveDependency(ctx.root, ctx.pkgJson, file, spec);
+  const target = resolveMetadataDependency(ctx, file, spec);
   if (!target) return null;
   let parsed;
   try {
@@ -120,6 +120,18 @@ function metadataForRemote(ctx, file, spec, local, cond, seen = new Set()) {
     return null;
   }
   return metadataForLocal(ctx, target, parsed, local, cond, seen);
+}
+
+function resolveMetadataDependency(ctx, file, spec) {
+  let external = false;
+  return resolveDependency(ctx.root, ctx.pkgJson, file, spec, {
+    onExternal: () => {
+      external = true;
+    },
+    onUnresolved: () => {
+      if (!external) ctx.traversal.markIncomplete();
+    },
+  });
 }
 
 function metadataForLocal(ctx, file, parsed, local, cond, seen = new Set()) {

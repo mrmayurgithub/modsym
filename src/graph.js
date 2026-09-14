@@ -131,12 +131,11 @@ function pickTypes(value) {
 /**
  * Breadth-first traversal state over the declaration graph.
  * Enqueueing enforces the F5 invariant (declaration files only), the
- * visited cap, and byte-identical mirror dedup (`.d.ts` vs `.d.cts`
- * mirrors of the same barrel are traversed once).
+ * visited cap, and exact traversal-state dedup for the same file and
+ * sought name.
  */
 export function createTraversal() {
   const visited = new Set();
-  const seenContent = new Set();
   const queue = [];
   let complete = true;
   return {
@@ -151,32 +150,23 @@ export function createTraversal() {
       complete = false;
     },
     enqueue(file, chain, seek, cond = null, extra = {}) {
-      if (!file || !DECL_RE.test(file) || visited.has(file)) {
+      const visitKey = traversalKey(file, seek);
+      if (!file || !DECL_RE.test(file) || visited.has(visitKey)) {
         return false;
       }
       if (visited.size >= MAX_VISITED) {
         complete = false;
         return false;
       }
-      const key = contentKey(file);
-      if (key && seenContent.has(key)) return false;
-      if (key) seenContent.add(key);
-      visited.add(file);
+      visited.add(visitKey);
       queue.push({ file, chain, seek, cond, ...extra });
       return true;
     },
   };
 }
 
-function contentKey(file) {
-  try {
-    const bytes = fs.readFileSync(file);
-    let hash = 0;
-    for (let i = 0; i < bytes.length; i++) hash = (hash * 31 + bytes[i]) | 0;
-    return `${bytes.length}:${hash}`;
-  } catch {
-    return null;
-  }
+function traversalKey(file, seek) {
+  return `${file}\0${seek ?? ''}`;
 }
 
 /** Count declaration files under `dir`, stopping early at `limit`. */

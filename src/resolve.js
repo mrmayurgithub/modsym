@@ -57,16 +57,34 @@ export function resolveIn(root, symbol) {
 
   const ctx = { root, pkgJson, symbol, traversal, signals };
   const starHits = [];
+  const deferredDirectHits = [];
   while (queue.length > 0) {
     const item = queue.shift();
     const hit = processOne(ctx, item);
     if (hit) {
       if (hit.fromStar) {
         collectStarHit(starHits, hit);
+      } else if (hit.deferForStarSiblings) {
+        collectStarHit(deferredDirectHits, hit);
       } else {
         return traversal.complete ? hit : resolutionIncomplete(ctx);
       }
     }
+  }
+  if (deferredDirectHits.length > 0) {
+    if (!traversal.complete) return resolutionIncomplete(ctx);
+    const allHits = [...deferredDirectHits, ...starHits];
+    const signatures = new Set(allHits.map(signatureKey));
+    if (signatures.size > 1) {
+      return {
+        status: 'ambiguous',
+        symbol,
+        reason: 'ambiguous',
+        candidates: allHits.slice(0, MAX_CANDIDATES).map(hitToCandidate),
+        filesVisited: traversal.visitedCount,
+      };
+    }
+    return stripInternalHit(deferredDirectHits[0]);
   }
   if (starHits.length > 1) {
     return {
@@ -101,6 +119,19 @@ function resolveDep(ctx, file, spec, hooks = {}) {
   return resolveDependency(ctx.root, ctx.pkgJson, file, spec, hooks);
 }
 
+function resolveNamedReexport(ctx, file, edge, seek) {
+  let external = false;
+  return resolveDep(ctx, file, edge.src, {
+    onExternal: src => {
+      external = true;
+      ctx.signals.external.push({ name: seek, src });
+    },
+    onUnresolved: () => {
+      if (!external) ctx.traversal.markIncomplete();
+    },
+  });
+}
+
 function processOne(ctx, item) {
   const { root, symbol, traversal, signals } = ctx;
   const { file, chain, seek, cond, fromStar = false } = item;
@@ -130,28 +161,28 @@ function processOne(ctx, item) {
     method,
     fromStar,
   });
+  let directHit = null;
 
   // 1. Direct exported declaration (overloads preserved as multiple records).
   if (parsed.local.has(seek)) {
-    return resolved(parsed.local.get(seek), undefined, 'ts-ast-direct');
+    directHit = resolved(parsed.local.get(seek), undefined, 'ts-ast-direct');
   }
 
   // 2. Seeking `default`: inline `export default class/function X`, or
   // `export default X` where X is declared in this file.
-  if (seek === 'default') {
+  if (!directHit && seek === 'default') {
     if (parsed.defaults.length > 0) {
-      return resolved(
+      directHit = resolved(
         parsed.defaults.map(d => d.rec),
         'export default',
         'ts-ast-default',
       );
-    }
-    if (
+    } else if (
       parsed.exportDefault &&
       (parsed.local.has(parsed.exportDefault) || parsed.pendingLocal.has(parsed.exportDefault))
     ) {
       const decls = parsed.local.get(parsed.exportDefault) || parsed.pendingLocal.get(parsed.exportDefault);
-      return resolved(decls, `export default ${parsed.exportDefault}`, 'ts-ast-default');
+      directHit = resolved(decls, `export default ${parsed.exportDefault}`, 'ts-ast-default');
     }
   }
 
@@ -159,32 +190,40 @@ function processOne(ctx, item) {
   // When `local` is itself imported (`export { tool as toolkit }`), follow
   // the import exactly like step 4 below.
   const sameFile = parsed.named.filter(n => n.exported === seek && n.src === null);
-  if (sameFile.length > 0) {
+  if (!directHit && sameFile.length > 0) {
     const localName = sameFile[0].local;
     const decls = parsed.local.get(localName) || parsed.pendingLocal.get(localName);
     if (decls) {
-      return resolved(decls, `export {${localName} as ${seek}}`, 'ts-ast-same-file-alias');
-    }
-    const localImport = parsed.imports.get(localName);
-    if (localImport && isRelativeSpecifier(localImport.src)) {
-      if (localImport.imported === '*') {
-        const target = resolveDep(ctx, file, localImport.src);
-        if (target) {
-          return namespaceHit(ctx, target, seek, chain, cond, localImport.src, `${localImport.src} (import * as ${localName})`, fromStar);
+      directHit = resolved(decls, `export {${localName} as ${seek}}`, 'ts-ast-same-file-alias');
+    } else {
+      const localImport = parsed.imports.get(localName);
+      if (localImport && isRelativeSpecifier(localImport.src)) {
+        if (localImport.imported === '*') {
+          const target = resolveDep(ctx, file, localImport.src);
+          if (target) {
+            return namespaceHit(ctx, target, seek, chain, cond, localImport.src, `${localImport.src} (import * as ${localName})`, fromStar);
+          }
+        } else {
+          traversal.enqueue(
+            resolveDep(ctx, file, localImport.src),
+            [...chain, `${localImport.src} (import ${localImport.imported} as ${localName})`],
+            localImport.imported === 'default' ? seek : localImport.imported,
+            cond,
+            { fromStar },
+          );
         }
-      } else {
-        traversal.enqueue(
-          resolveDep(ctx, file, localImport.src),
-          [...chain, `${localImport.src} (import ${localImport.imported} as ${localName})`],
-          localImport.imported === 'default' ? seek : localImport.imported,
-          cond,
-          { fromStar },
-        );
       }
     }
   }
   if (parsed.named.some(n => n.src === null && n.local === seek && n.exported === 'default')) {
     signals.defaultOnly = true;
+  }
+  if (directHit) {
+    collectSignals(ctx, signals, file, parsed, seek);
+    if (probeDirectHitEdges(ctx, file, parsed, seek, chain, cond)) {
+      directHit.deferForStarSiblings = true;
+    }
+    return directHit;
   }
 
   // 4. Same-file `export {seek}` of an imported symbol: follow the import.
@@ -223,11 +262,11 @@ function processOne(ctx, item) {
 
   // 6. Named re-exports: follow only edges that export the sought name,
   // tracking renames (`export {A as B}` continues the search as `A`).
+  let explicitLocalReexport = false;
   for (const edge of parsed.named.filter(n => n.exported === seek && n.src)) {
-    const target = resolveDep(ctx, file, edge.src, {
-      onExternal: src => signals.external.push({ name: seek, src }),
-    });
+    const target = resolveNamedReexport(ctx, file, edge, seek);
     if (target) {
+      explicitLocalReexport = true;
       traversal.enqueue(target, [...chain, `${edge.src} (${edge.local} as ${edge.exported})`], edge.local, cond, { fromStar });
     }
   }
@@ -235,11 +274,30 @@ function processOne(ctx, item) {
   // 7. Star re-exports (namespace stars were excluded at parse time).
   for (const src of parsed.stars) {
     const target = resolveDep(ctx, file, src, {
-      onUnresolved: () => traversal.markIncomplete(),
+      onUnresolved: () => {
+        if (!explicitLocalReexport) traversal.markIncomplete();
+      },
     });
     if (target) traversal.enqueue(target, [...chain, src], seek, cond, { fromStar: true });
   }
   return null;
+}
+
+function probeDirectHitEdges(ctx, file, parsed, seek, chain, cond) {
+  const { traversal } = ctx;
+  for (const edge of parsed.named.filter(n => n.exported === seek && n.src)) {
+    resolveNamedReexport(ctx, file, edge, seek);
+  }
+  let enqueuedStarSibling = false;
+  for (const src of parsed.stars) {
+    const target = resolveDep(ctx, file, src, {
+      onUnresolved: () => traversal.markIncomplete(),
+    });
+    if (target && traversal.enqueue(target, [...chain, src], seek, cond, { fromStar: true })) {
+      enqueuedStarSibling = true;
+    }
+  }
+  return enqueuedStarSibling;
 }
 
 function collectStarHit(hits, hit) {
@@ -250,8 +308,16 @@ function collectStarHit(hits, hit) {
 }
 
 function stripStarHit(hit) {
-  const { fromStar, ...rest } = hit;
+  return stripInternalHit(hit);
+}
+
+function stripInternalHit(hit) {
+  const { fromStar, deferForStarSiblings, ...rest } = hit;
   return rest;
+}
+
+function signatureKey(hit) {
+  return `${hit.decl.kind}:${hit.decl.overloads}:${hit.decl.text}`;
 }
 
 function hitToCandidate(hit) {

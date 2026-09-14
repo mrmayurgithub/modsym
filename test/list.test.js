@@ -107,6 +107,44 @@ describe('listExportsIn: root public export surface', () => {
     assert.deepEqual(result.exports, [{ name: 'tools', kind: 'namespace' }]);
   });
 
+  it('abstains when a namespace re-export target cannot be resolved', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-list-missing-ns-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-list-missing-namespace',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'index.d.ts'),
+      'export declare function Foo(): void;\nexport * as ns from "./missing.js";\n',
+    );
+
+    assert.deepEqual(listExportsIn(dir), {
+      status: 'not-resolved',
+      reason: 'resolution_incomplete',
+      filesVisited: 1,
+    });
+  });
+
+  it('abstains when named re-export metadata cannot be resolved', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-list-missing-named-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-list-missing-named',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'index.d.ts'),
+      'export declare function Foo(): void;\nexport { Bar } from "./missing.js";\n',
+    );
+
+    assert.deepEqual(listExportsIn(dir), {
+      status: 'not-resolved',
+      reason: 'resolution_incomplete',
+      filesVisited: 1,
+    });
+  });
+
   it('lists external named re-exports but does not invent declaration metadata', () => {
     const result = listExportsIn(root('fixture-external'));
     assert.deepEqual(result.exports, [
@@ -244,6 +282,26 @@ describe('listExportsIn: root public export surface', () => {
       status: 'not-resolved',
       reason: 'resolution_incomplete',
       filesVisited: 2,
+    });
+  });
+
+  it('keeps list mode incomplete when an explicit named export has an external star sibling', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-list-explicit-named-star-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'fixture-list-explicit-named-star',
+      version: '1.0.0',
+      types: './index.d.ts',
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'index.d.ts'),
+      'export { Foo } from "./foo.js";\nexport * from "external-package";\n',
+    );
+    fs.writeFileSync(path.join(dir, 'foo.d.ts'), 'export declare function Foo(): void;\n');
+
+    assert.deepEqual(listExportsIn(dir), {
+      status: 'not-resolved',
+      reason: 'resolution_incomplete',
+      filesVisited: 1,
     });
   });
 
