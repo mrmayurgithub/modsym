@@ -47,6 +47,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - name: Local fixture CLI smoke test
+        shell: bash
         run: |
           result="$(node bin/modsym.js "file:test/fixtures/fixture-barrel" gadget)"
           node -e 'const r = JSON.parse(process.argv[1]); if (r.status !== "resolved" || r.declaration?.file !== "leaf.d.ts") { throw new Error(`unexpected result: ${JSON.stringify(r)}`); }' "$result"
