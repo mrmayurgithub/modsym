@@ -21,6 +21,12 @@ jobs:
           package-manager-cache: false # never use caching in release builds
       - run: npm ci
       - run: npm test
+      - name: Pinned real-package corpus (release gate)
+        # docs/releasing.md requires this. Network-dependent by design, so
+        # transient registry failures retry with bounded backoff inside
+        # scripts/real-corpus.mjs; the runner reports infra/registry
+        # failures distinctly from resolver regressions.
+        run: npm run test:real
       - name: Verify packed package in a clean consumer
         run: |
           temp_dir="$(mktemp -d)"

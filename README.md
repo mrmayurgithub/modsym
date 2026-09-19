@@ -208,10 +208,8 @@ A wrong confident answer is treated as strictly worse than abstention.
 | macOS | ✅ | — | ✅ |
 | Windows | ✅ | — | ✅ |
 
-`package.json` requires Node `>= 18` via `engines`. Node 18 is
-warning-tolerant and unverified against the current lockfile
-(`pacote`/`npm-package-arg` majors require newer Node); the
-informational Node 18 CI job is allowed to fail. See
+`package.json` requires Node `>=20.17.0` via `engines`, matching the
+locked `pacote`/`npm-package-arg` majors. Node 18 is unsupported. See
 `.github/workflows/compat.yml`, the source of truth for the tested matrix.
 
 ## Benchmark note

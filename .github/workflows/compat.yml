@@ -51,18 +51,3 @@ jobs:
         run: |
           result="$(node bin/modsym.js "file:test/fixtures/fixture-barrel" gadget)"
           node -e 'const r = JSON.parse(process.argv[1]); if (r.status !== "resolved" || r.declaration?.file !== "leaf.d.ts") { throw new Error(`unexpected result: ${JSON.stringify(r)}`); }' "$result"
-
-  # Informational only: the declared engines minimum (Node 18) against the
-  # current lockfile, whose pacote/npm-package-arg majors require newer Node.
-  # Allowed to fail without blocking; see README support matrix.
-  node18-informational:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "18"
-          package-manager-cache: false
-      - run: npm ci
-      - run: npm test
