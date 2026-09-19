@@ -30,6 +30,12 @@ modsym @ai-sdk/openai@4.0.60 createOpenAI
 
 `modsym` is primarily a small primitive for coding agents and agentic developer tooling that need to inspect an unfamiliar npm API. It is also usable directly from a terminal, but it is not a general npm inspection tool.
 
+Route an investigation to `modsym` when the question is which published
+TypeScript declaration backs an unfamiliar, export-heavy npm API. Skip it for
+implementation or runtime investigation, flat declarations, compiler-guided
+fixes, documentation lookup, qualified or ambient symbols, and untyped
+packages.
+
 ## Find which `.d.ts` file defines an exported npm package symbol
 
 When an agent needs the exact declaration behind an unfamiliar export — the file and line an IDE's 'go to definition' would land on — the manual path is sometimes:
@@ -77,7 +83,23 @@ modsym <package-spec> <symbol>
 modsym <package-spec> --list [--match <text>] [--limit <n>]
 ```
 
-JSON always goes to stdout. Exit code `0` when resolved, `2` for `not_resolved` / `ambiguous`, `1` for usage or operational errors (one line on stderr, no stack traces). No colors, no interaction, no extra logging. Packages are fetched into a content-addressed cache (`~/.cache/modsym`, overridable via `MODSYM_CACHE`); nothing is written to your working directory.
+Normal resolve and `--list` commands emit deterministic JSON on stdout. `--help`
+and `--version` are informational text commands. Exit code `0` means a
+resolution or listing succeeded, `2` means an intentional abstention
+(`not_resolved` or `ambiguous`), and `1` means a usage or operational error
+(one line on stderr, no stack traces). No colors, no interaction, no extra
+logging.
+
+For registry packages, the extracted package cache defaults to
+`~/.cache/modsym/pkgs` (or `$XDG_CACHE_HOME/modsym/pkgs` when
+`XDG_CACHE_HOME` is set). `MODSYM_CACHE` replaces that extracted-package cache
+directory. On a cold cache, modsym resolves registry manifest metadata and
+then downloads and extracts the package. On a warm cache, it still resolves
+the manifest first, then reuses a matching extracted package. Therefore a warm
+extracted cache does not guarantee fully offline operation: registry metadata
+resolution may still require network access. Local `file:` directory package
+specs can be used without registry access. Nothing is written to your working
+directory.
 
 When an agent does not know the exact exported symbol yet, list the package's
 root declaration API surface:
@@ -170,21 +192,4 @@ Supports bare exported TypeScript symbols in npm packages, including direct expo
 Explicitly out of scope:
 
 - npm only (no other ecosystems)
-- declaration resolution only — no implementation/source lookup
-- no external-package or package `#imports` re-export traversal
-- no full subpath crawling in list mode
-- no qualified (`ns.Sym`) or ambient symbol resolution
-- may truthfully return `not_resolved` or `ambiguous`
-
-A wrong confident answer is treated as strictly worse than abstention.
-
-## Benchmark note
-
-In a small 12-task A/B check, agents with `modsym` solved all tasks correctly and used far less inspection output on a few export-heavy cases, with no overall median-call reduction since many trivial tasks needed no inspection at all. Details, including negative findings, are in [`docs/benchmark.md`](docs/benchmark.md).
-
-## Development
-
-```bash
-npm install
-npm test
-```
+- declaration resolution only — no implementati

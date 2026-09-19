@@ -21,4 +21,20 @@ jobs:
           package-manager-cache: false # never use caching in release builds
       - run: npm ci
       - run: npm test
+      - name: Verify packed package in a clean consumer
+        run: |
+          temp_dir="$(mktemp -d)"
+          pack_dir="$temp_dir/pack"
+          consumer_dir="$temp_dir/consumer"
+          mkdir "$pack_dir" "$consumer_dir"
+
+          npm pack --json --pack-destination "$pack_dir" > "$pack_dir/pack.json"
+          tarball="$(node -e 'const [{ filename }] = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(`${process.argv[2]}/${filename}`);' "$pack_dir/pack.json" "$pack_dir")"
+
+          (cd "$consumer_dir" && npm init --yes --silent)
+          (cd "$consumer_dir" && npm install --ignore-scripts --no-package-lock "$tarball")
+          (cd "$consumer_dir/node_modules/modsym" && npm test)
+
+          result="$(MODSYM_CACHE="$temp_dir/cache" "$consumer_dir/node_modules/.bin/modsym" "file:$consumer_dir/node_modules/modsym/test/fixtures/fixture-barrel" gadget)"
+          node -e 'const result = JSON.parse(process.argv[1]); if (result.status !== "resolved" || result.declaration?.file !== "leaf.d.ts") { throw new Error(`unexpected result: ${JSON.stringify(result)}`); }' "$result"
       - run: npm publish

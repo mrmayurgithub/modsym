@@ -6,7 +6,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serialize } from '../src/serialize.js';
 import { run } from '../src/cli.js';
-import { resolvePackageSymbol } from '../src/index.js';
 
 const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const fileSpec = name => `file:${path.join(fixtures, name)}`;
@@ -150,8 +149,17 @@ describe('cli: behavior contract', () => {
   });
 
   it('is deterministic across runs', async () => {
-    const first = await resolvePackageSymbol(fileSpec('fixture-bundled'), 'make');
-    const second = await resolvePackageSymbol(fileSpec('fixture-bundled'), 'make');
-    assert.deepEqual(first, second);
+    const firstIo = capture();
+    const secondIo = capture();
+    const firstCode = await run([fileSpec('fixture-bundled'), 'make'], { ...firstIo, env: {} });
+    const secondCode = await run([fileSpec('fixture-bundled'), 'make'], { ...secondIo, env: {} });
+
+    assert.equal(firstCode, 0);
+    assert.equal(secondCode, 0);
+    assert.equal(firstIo.err, '');
+    assert.equal(secondIo.err, '');
+    assert.doesNotThrow(() => JSON.parse(firstIo.out));
+    assert.doesNotThrow(() => JSON.parse(secondIo.out));
+    assert.equal(firstIo.out, secondIo.out);
   });
 });

@@ -12,7 +12,8 @@ const pacote = require('pacote');
  * Acquire an extracted package directory for a spec, reusing caches.
  *
  * - Registry specs: extracted once per tarball integrity under the cache
- *   directory (`~/.cache/modsym`, `XDG_CACHE_HOME`, or `MODSYM_CACHE`),
+ *   directory (`~/.cache/modsym/pkgs`, `$XDG_CACHE_HOME/modsym/pkgs`, or the
+ *   exact `MODSYM_CACHE` value),
  *   reusing npm/pacote's own download cache underneath. Nothing is written
  *   to the user's working directory.
  * - Local `file:`/directory specs: used in place (test path), never copied.
