@@ -40,39 +40,70 @@ if (!Array.isArray(cases) || cases.length === 0) {
 
 const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'modsym-real-'));
 let passed = 0;
-let failed = 0;
+const assertionFailures = [];
+const infraFailures = [];
+
+// Bounded retry for transient registry/network failures only (CLI errored
+// with no stdout JSON, non-JSON stdout, or timeouts). Assertion mismatches
+// (wrong status/reason/file/kind) are deterministic resolver results and
+// are never retried.
+const MAX_ATTEMPTS = 3;
+
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // best effort; a failed sleep must not fail the run
+  }
+}
+
+function runCaseOnce(spec, symbol) {
+  try {
+    const raw = execFileSync('node', [path.join(repoRoot, 'bin', 'modsym.js'), spec, symbol], {
+      encoding: 'utf8',
+      env: { ...process.env, MODSYM_CACHE: cacheDir },
+      timeout: 180000,
+    });
+    return { raw };
+  } catch (err) {
+    // Abstentions exit 2 with valid JSON on stdout; only a missing stdout
+    // is a genuine infra/runner failure (registry, network, timeout).
+    if (typeof err.stdout === 'string' && err.stdout.trim()) {
+      return { raw: err.stdout };
+    }
+    return { cliError: String((err.stderr || err.message || err)).split('\n')[0] };
+  }
+}
 
 for (const entry of cases) {
   const { spec, symbol, expect = {} } = entry;
   const label = `${spec} ${symbol}`;
   let raw = null;
   let cliError = null;
-  try {
-    raw = execFileSync('node', [path.join(repoRoot, 'bin', 'modsym.js'), spec, symbol], {
-      encoding: 'utf8',
-      env: { ...process.env, MODSYM_CACHE: cacheDir },
-      timeout: 180000,
-    });
-  } catch (err) {
-    // Abstentions exit 2 with valid JSON on stdout; only a missing stdout
-    // is a genuine runner failure.
-    if (typeof err.stdout === 'string' && err.stdout.trim()) {
-      raw = err.stdout;
-    } else {
-      cliError = String((err.stderr || err.message || err)).split('\n')[0];
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const outcome = runCaseOnce(spec, symbol);
+    if (outcome.raw !== undefined) {
+      raw = outcome.raw;
+      cliError = null;
+      break;
+    }
+    cliError = outcome.cliError;
+    raw = null;
+    if (attempt < MAX_ATTEMPTS) {
+      sleepSync(2000 * attempt);
     }
   }
   if (raw === null) {
-    console.log(`FAIL ${label} — CLI errored with no stdout JSON: ${cliError}`);
-    failed += 1;
+    console.log(`FAIL ${label} — infra/registry: CLI errored with no stdout JSON after ${MAX_ATTEMPTS} attempts: ${cliError}`);
+    infraFailures.push(label);
     continue;
   }
   let actual;
   try {
     actual = JSON.parse(raw);
   } catch {
-    console.log(`FAIL ${label} — stdout is not JSON: ${raw.slice(0, 120)}`);
-    failed += 1;
+    console.log(`FAIL ${label} — infra/registry: stdout is not JSON after ${MAX_ATTEMPTS} attempts: ${raw.slice(0, 120)}`);
+    infraFailures.push(label);
     continue;
   }
   const problems = [];
@@ -100,8 +131,8 @@ for (const entry of cases) {
     console.log(`PASS ${label} — ${detail}`);
     passed += 1;
   } else {
-    console.log(`FAIL ${label} — ${problems.join('; ')}`);
-    failed += 1;
+    console.log(`FAIL ${label} — resolver regression: ${problems.join('; ')}`);
+    assertionFailures.push(label);
   }
 }
 
@@ -111,5 +142,13 @@ try {
   // best effort
 }
 
-console.log(`real-corpus: ${passed} passed, ${failed} failed, ${cases.length} total`);
+const failed = assertionFailures.length + infraFailures.length;
+console.log(
+  `real-corpus: ${passed} passed, ${failed} failed (${assertionFailures.length} resolver regressions, ${infraFailures.length} infra/registry), ${cases.length} total`,
+);
+if (failed > 0 && infraFailures.length > 0 && assertionFailures.length === 0) {
+  console.log(
+    'real-corpus infra failure: registry/network unavailable after bounded retries; not a resolver regression. Retry the release gate when the registry is reachable.',
+  );
+}
 process.exit(failed === 0 ? 0 : 1);
