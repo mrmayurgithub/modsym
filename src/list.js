@@ -7,6 +7,7 @@ import {
   resolveDependency,
   resolveFile,
   flavorOf,
+  toPosixRel,
   countDeclFiles,
 } from './graph.js';
 
@@ -176,7 +177,7 @@ function declMeta(ctx, file, decls, cond) {
   if (!first) return null;
   return {
     kind: first.kind,
-    file: path.relative(ctx.root, file),
+    file: toPosixRel(ctx.root, file),
     line: first.line,
     signature: `${first.kind}:${first.text}`,
     condition: cond ?? null,
