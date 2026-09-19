@@ -192,4 +192,50 @@ Supports bare exported TypeScript symbols in npm packages, including direct expo
 Explicitly out of scope:
 
 - npm only (no other ecosystems)
-- declaration resolution only — no implementati
+- declaration resolution only — no implementation/source lookup
+- no external-package or package `#imports` re-export traversal
+- no full subpath crawling in list mode
+- no qualified (`ns.Sym`) or ambient symbol resolution
+- may truthfully return `not_resolved` or `ambiguous`
+
+A wrong confident answer is treated as strictly worse than abstention.
+
+## Support matrix
+
+| OS | Node 20 | Node 22 | Node 24 |
+| --- | --- | --- | --- |
+| Ubuntu | ✅ | ✅ | ✅ |
+| macOS | ✅ | — | ✅ |
+| Windows | ✅ | — | ✅ |
+
+`package.json` requires Node `>= 18` via `engines`. Node 18 is
+warning-tolerant and unverified against the current lockfile
+(`pacote`/`npm-package-arg` majors require newer Node); the
+informational Node 18 CI job is allowed to fail. See
+`.github/workflows/compat.yml`, the source of truth for the tested matrix.
+
+## Benchmark note
+
+In a small 12-task A/B check, agents with `modsym` solved all tasks correctly and used far less inspection output on a few export-heavy cases, with no overall median-call reduction since many trivial tasks needed no inspection at all. Details, including negative findings, are in [`docs/benchmark.md`](docs/benchmark.md).
+
+Synthetic offline harness: `node scripts/bench.mjs` builds declaration
+graphs in temp dirs (no network), asserts correctness before timing, and
+prints a JSON report with informational timings. Invoke via direct `node`
+(not `npm run`) for clean JSON capture on stdout.
+
+## Development
+
+```bash
+npm install
+npm test
+```
+
+Pinned real-package smoke corpus (network-dependent, not part of `npm test`):
+
+```bash
+npm run test:real
+```
+
+Expectations live in `test/real-corpus.json` and are hand-verified; a
+different resolved file/kind is a hard failure. Never edit expectations to
+make the runner pass.

@@ -34,6 +34,7 @@
   "files": [
     "bin/",
     "src/",
+    "scripts/",
     "test/",
     "docs/",
     "README.md",
@@ -47,7 +48,9 @@
   "scripts": {
     "test": "node --test test/resolve.test.js test/entry.test.js test/graph.test.js test/contract.test.js test/list.test.js",
     "test:corpora": "node scripts/test-corpora.mjs",
-    "gen:fixtures": "node scripts/gen-fixtures.mjs"
+    "gen:fixtures": "node scripts/gen-fixtures.mjs",
+    "test:real": "node scripts/real-corpus.mjs",
+    "bench": "node scripts/bench.mjs"
   },
   "main": "index.js",
   "directories": {
