@@ -9,6 +9,7 @@ import {
   isRelativeSpecifier,
   isBareSpecifier,
   flavorOf,
+  toPosixRel,
   countDeclFiles,
 } from './graph.js';
 
@@ -157,7 +158,7 @@ function processOne(ctx, item) {
     traversal.markIncomplete();
     return null;
   }
-  const rel = path.relative(root, file);
+  const rel = toPosixRel(root, file);
   const resolved = (decls, via, method) => ({
     status: 'resolved',
     symbol,
@@ -390,7 +391,7 @@ function namespaceHit(ctx, target, seek, chain, cond, src, edgeLabel, fromStar =
     status: 'resolved',
     symbol: ctx.symbol,
     decl: {
-      file: path.relative(ctx.root, target),
+      file: toPosixRel(ctx.root, target),
       line: 1,
       kind: 'namespace',
       overloads: 1,

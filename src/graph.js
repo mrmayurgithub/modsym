@@ -13,6 +13,16 @@ export function flavorOf(file) {
   return 'd.ts';
 }
 
+/**
+ * Package-relative declaration path with POSIX separators.
+ *
+ * `path.relative` yields backslashes on Windows; emitted `declaration.file`
+ * values are package-portable contract output, so they always use `/`.
+ */
+export function toPosixRel(root, file) {
+  return path.relative(root, file).split(path.sep).join('/');
+}
+
 export function isRelativeSpecifier(spec) {
   return spec.startsWith('.') || spec.startsWith('/');
 }
